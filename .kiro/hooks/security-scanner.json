@@ -1,0 +1,26 @@
+{
+  "why": "To identify potential security vulnerabilities in code changes before they reach production",
+  "id": "security-scanner",
+  "name": "Security Vulnerability Scanner",
+  "description": "Scans modified code for common security issues including SQL injection, XSS, hardcoded secrets, insecure dependencies, and other OWASP top 10 vulnerabilities",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*.py,**/*.js,**/*.ts,**/*.java,**/*.php",
+  "hookAction": "askAgent",
+  "command": "",
+  "outputPrompt": "A code file has been modified. Please perform a security analysis:\n\n1. **Input Validation**: Check if user inputs are properly validated and sanitized\n2. **SQL Injection**: Look for potential SQL injection vulnerabilities\n3. **XSS Prevention**: Verify output is properly escaped\n4. **Authentication & Authorization**: Check for proper access controls\n5. **Secrets Management**: Ensure no hardcoded passwords, API keys, or tokens\n6. **Cryptography**: Verify secure algorithms and proper key management\n7. **Error Handling**: Check that error messages don't leak sensitive information\n8. **Dependencies**: Flag any known vulnerable dependencies\n9. **File Operations**: Verify safe file handling and path traversal prevention\n10. **Rate Limiting**: Check for DoS prevention measures\n\nProvide specific security recommendations with severity levels (Critical, High, Medium, Low).",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}

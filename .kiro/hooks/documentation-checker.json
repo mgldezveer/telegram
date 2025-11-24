@@ -1,0 +1,26 @@
+{
+  "why": "To ensure code documentation is complete and up-to-date when files are modified",
+  "id": "documentation-checker",
+  "name": "Documentation Checker",
+  "description": "Analyzes modified code files to verify that functions, classes, and modules have proper documentation including docstrings, type hints, and comments",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*.py,**/*.js,**/*.ts",
+  "hookAction": "askAgent",
+  "command": "",
+  "outputPrompt": "A code file has been modified. Please review the documentation quality:\n\n1. **Docstrings**: Check that all public functions, classes, and methods have descriptive docstrings\n2. **Type Hints**: Verify that function signatures include proper type hints for parameters and return values\n3. **Comments**: Ensure complex logic has explanatory comments\n4. **Module Documentation**: Check if the module has a proper header docstring\n5. **Examples**: Suggest adding usage examples for complex functions\n6. **Parameter Documentation**: Verify all parameters are documented with their purpose and expected types\n\nProvide specific suggestions for improving documentation without changing functionality.",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}

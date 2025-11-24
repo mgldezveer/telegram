@@ -1,0 +1,26 @@
+{
+  "why": "To automatically run tests when code files are saved to ensure changes don't break existing functionality",
+  "id": "test-runner",
+  "name": "Automatic Test Runner",
+  "description": "Runs relevant tests automatically when source code or test files are modified to provide immediate feedback on code changes",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*.py,**/test_*.py,**/*_test.py",
+  "hookAction": "runCommand",
+  "command": "pytest {{filePath}} -v --tb=short",
+  "outputPrompt": "",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}

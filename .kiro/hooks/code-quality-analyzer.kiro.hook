@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "name": "Code Quality Analyzer",
+  "description": "Monitors source code file changes and provides suggestions for code quality improvements including code smells, design patterns, best practices, readability, maintainability, and performance optimizations",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.py",
+      "**/*.js",
+      "**/*.ts",
+      "**/*.java",
+      "**/*.cpp",
+      "**/*.c",
+      "**/*.go",
+      "**/*.rs",
+      "**/*.rb",
+      "**/*.php"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A source code file has been modified. Please analyze the changes in the file for potential improvements:\n\n1. **Code Smells**: Identify any code smells such as:\n   - Long methods or functions\n   - Duplicate code\n   - Large classes\n   - Too many parameters\n   - Dead code\n   - Magic numbers or strings\n\n2. **Design Patterns**: Suggest applicable design patterns that could improve the code structure\n\n3. **Best Practices**: Check for:\n   - Proper error handling\n   - Input validation\n   - Security concerns\n   - Resource management\n   - Naming conventions\n   - Code organization\n\n4. **Readability**: Evaluate:\n   - Code clarity and simplicity\n   - Comment quality and necessity\n   - Variable and function naming\n   - Code formatting consistency\n\n5. **Maintainability**: Assess:\n   - Code modularity\n   - Separation of concerns\n   - Testability\n   - Documentation completeness\n\n6. **Performance**: Look for:\n   - Inefficient algorithms\n   - Unnecessary computations\n   - Memory leaks\n   - Database query optimization opportunities\n   - Caching opportunities\n\nPlease provide specific, actionable suggestions while maintaining the existing functionality. Focus on improvements that will have the most impact on code quality."
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "why": "To ensure README and documentation stay current with code changes",
+  "id": "readme-updater",
+  "name": "README Update Reminder",
+  "description": "Detects significant code changes and reminds to update README, documentation, and changelog files accordingly",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*.py,**/*.js,**/*.ts",
+  "hookAction": "askAgent",
+  "command": "",
+  "outputPrompt": "Code files have been modified. Please check if documentation needs updates:\n\n1. **API Changes**: Identify any new or modified public APIs that should be documented\n2. **Configuration**: Check if new configuration options were added\n3. **Dependencies**: Note if new dependencies require installation instructions\n4. **Breaking Changes**: Flag any breaking changes that need migration guides\n5. **Examples**: Suggest if new usage examples should be added\n6. **Changelog**: Recommend changelog entries for this change\n7. **README Sections**: Identify which README sections might need updates\n\nProvide specific suggestions for documentation updates.",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}

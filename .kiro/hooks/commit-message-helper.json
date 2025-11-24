@@ -1,0 +1,26 @@
+{
+  "why": "To help generate meaningful commit messages based on code changes",
+  "id": "commit-message-helper",
+  "name": "Commit Message Generator",
+  "description": "Analyzes file changes and suggests conventional commit messages that accurately describe the modifications",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*",
+  "hookAction": "askAgent",
+  "command": "",
+  "outputPrompt": "Files have been modified. Please suggest a conventional commit message:\n\n1. Analyze the changes made to the files\n2. Determine the commit type (feat, fix, docs, style, refactor, test, chore)\n3. Identify the scope (component/module affected)\n4. Write a concise subject line (max 50 chars)\n5. Provide a detailed body explaining what and why (if needed)\n6. Add breaking change footer if applicable\n\nFormat:\n```\n<type>(<scope>): <subject>\n\n<body>\n\n<footer>\n```\n\nProvide 2-3 commit message options ranked by appropriateness.",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}

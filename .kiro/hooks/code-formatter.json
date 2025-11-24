@@ -1,0 +1,26 @@
+{
+  "why": "To automatically format code according to project style guidelines when files are saved",
+  "id": "code-formatter",
+  "name": "Automatic Code Formatter",
+  "description": "Runs code formatters (Black, Prettier, etc.) on modified files to ensure consistent code style across the project",
+  "eventType": "fileEdited",
+  "filePatterns": "**/*.py",
+  "hookAction": "runCommand",
+  "command": "black {{filePath}} && isort {{filePath}}",
+  "outputPrompt": "",
+  "_meta": {
+    "_isValid": true,
+    "_activePath": [],
+    "_completedPaths": [
+      ["why"],
+      ["id"],
+      ["name"],
+      ["description"],
+      ["eventType"],
+      ["filePatterns"],
+      ["hookAction"],
+      ["command"],
+      ["outputPrompt"]
+    ]
+  }
+}
