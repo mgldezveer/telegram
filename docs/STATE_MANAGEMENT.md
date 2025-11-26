@@ -82,13 +82,15 @@ await nav_history.clear(user_id)
 
 ### ConversationManager
 
-Manages multi-step conversations with automatic timeout handling.
+Manages multi-step conversations with automatic timeout handling and seamless menu navigation.
 
 **Features:**
 - Conversation timeout (default: 5 minutes)
 - Automatic conversation tracking
 - Timeout notifications
 - Cleanup of expired conversations
+- Mixed handler support (CallbackQuery + MessageHandler)
+- Automatic menu restoration after conversation completion or cancellation
 
 **Usage:**
 
@@ -110,6 +112,22 @@ cleaned = await conv_manager.cleanup_expired_conversations(context)
 # Get active count
 count = conv_manager.get_active_conversations_count()
 ```
+
+**Navigation Flow:**
+
+After conversation completion or cancellation, the system automatically:
+1. Ends the conversation state
+2. Displays appropriate confirmation message
+3. Restores the relevant menu (e.g., channels menu after channel registration)
+4. Ensures smooth user experience without manual navigation
+
+**Technical Details:**
+
+All conversation handlers use `per_message=False` configuration to properly handle mixed handler types:
+- Entry points use `CallbackQueryHandler` (button clicks)
+- State handlers use `MessageHandler` (text input)
+
+This ensures conversations work correctly when transitioning from callback queries to message-based input.
 
 ## Automatic Cleanup
 
@@ -257,6 +275,16 @@ If cleanup doesn't run:
 2. Check for exceptions in logs
 3. Verify asyncio event loop is running
 4. Check cleanup interval configuration
+
+### Conversation Handler Issues
+
+If conversations don't work properly with mixed handlers:
+
+1. Verify `per_message=False` is set in ConversationHandler
+2. Check that entry points use CallbackQueryHandler
+3. Ensure state handlers use MessageHandler
+4. Review logs for handler conflicts
+5. Confirm conversation timeout is appropriate
 
 ## Testing
 

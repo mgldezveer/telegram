@@ -23,6 +23,14 @@ from src.interface.content_interface import ContentInterface
 from src.interface.analytics_interface import AnalyticsInterface
 from src.interface.settings_interface import SettingsInterface
 from src.interface.schedule_interface import ScheduleInterface
+from src.llm.manager import LLMManager
+from src.llm.cache import CacheService
+from src.llm.rate_limiter import RateLimitManager
+from src.llm.providers import (
+    create_groq_provider_from_env,
+    create_gemini_provider_from_env
+)
+from src.llm.config import get_config as get_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,9 @@ class BotController:
     def __init__(self):
         self.app: Application = None
         self.bot: Bot = None
+        
+        # Initialize LLM system
+        self.llm_manager = self._initialize_llm_manager()
         
         # Initialize services
         self.content_generator = ContentGenerator()
@@ -62,6 +73,65 @@ class BotController:
         
         self.is_running = False
     
+    def _initialize_llm_manager(self) -> LLMManager:
+        """Initialize LLM Manager with available providers."""
+        logger.info("Initializing LLM Manager...")
+        
+        try:
+            # Load LLM configuration
+            llm_config = get_llm_config()
+            
+            # Create providers
+            providers = []
+            
+            # Groq
+            groq = create_groq_provider_from_env()
+            if groq:
+                providers.append(groq)
+                logger.info("✅ Groq provider initialized")
+            
+            # Gemini
+            gemini = create_gemini_provider_from_env()
+            if gemini:
+                providers.append(gemini)
+                logger.info("✅ Gemini provider initialized")
+            
+            if not providers:
+                logger.warning("⚠️ No LLM providers available! Bot will use mock generation.")
+                return None
+            
+            # Create cache service if enabled
+            cache_service = None
+            if llm_config.cache_enabled:
+                cache_service = CacheService(
+                    max_memory_size=llm_config.cache_max_size,
+                    default_ttl=llm_config.cache_ttl
+                )
+                logger.info("✅ LLM cache enabled")
+            
+            # Create rate limiter if enabled
+            rate_limiter = None
+            if llm_config.rate_limit_enabled:
+                rate_limiter = RateLimitManager()
+                logger.info("✅ LLM rate limiter enabled")
+            
+            # Create LLM Manager
+            manager = LLMManager(
+                providers=providers,
+                cache_service=cache_service,
+                rate_limiter=rate_limiter,
+                max_retries=llm_config.max_retries,
+                retry_delay=llm_config.retry_delay
+            )
+            
+            logger.info(f"✅ LLM Manager initialized with {len(providers)} provider(s)")
+            return manager
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize LLM Manager: {e}")
+            logger.warning("⚠️ Bot will use mock generation")
+            return None
+    
     async def start(self):
         """Start the bot."""
         logger.info("Starting AI Content Bot")
@@ -70,6 +140,15 @@ class BotController:
             # Create application
             self.app = Application.builder().token(config.bot.token).build()
             self.bot = self.app.bot
+            
+            # Store LLM Manager in bot_data for access from handlers
+            if self.llm_manager:
+                self.app.bot_data['llm_manager'] = self.llm_manager
+                logger.info("✅ LLM Manager stored in bot_data")
+            
+            # Initialize auto-posting system
+            from src.services.autopost.initializer import initialize_autopost_system
+            await initialize_autopost_system()
             
             # Initialize services that need bot
             self.channel_manager = ChannelManager(self.bot)
@@ -202,6 +281,38 @@ class BotController:
         self.app.add_handler(CommandHandler("stop", self.stop_command))
         self.app.add_handler(CommandHandler("register", self.register_channel_command))
         self.app.add_handler(CommandHandler("generate", self.generate_command))
+        
+        # LLM Management commands (admin only)
+        from src.bot.handlers.llm_commands import (
+            llm_status_command,
+            llm_stats_command,
+            llm_switch_command,
+            llm_cache_clear_command,
+            llm_reload_command
+        )
+        self.app.add_handler(CommandHandler("llm_status", llm_status_command))
+        self.app.add_handler(CommandHandler("llm_stats", llm_stats_command))
+        self.app.add_handler(CommandHandler("llm_switch", llm_switch_command))
+        self.app.add_handler(CommandHandler("llm_cache_clear", llm_cache_clear_command))
+        self.app.add_handler(CommandHandler("llm_reload", llm_reload_command))
+        logger.info("✅ LLM management commands registered")
+        
+        # Auto-posting commands (admin only)
+        from src.bot.handlers.autopost_commands import (
+            autopost_add_channel_command,
+            autopost_list_channels_command,
+            autopost_generate_command,
+            autopost_queue_command,
+            autopost_schedule_command,
+            autopost_help_command
+        )
+        self.app.add_handler(CommandHandler("autopost_add_channel", autopost_add_channel_command))
+        self.app.add_handler(CommandHandler("autopost_list_channels", autopost_list_channels_command))
+        self.app.add_handler(CommandHandler("autopost_generate", autopost_generate_command))
+        self.app.add_handler(CommandHandler("autopost_queue", autopost_queue_command))
+        self.app.add_handler(CommandHandler("autopost_schedule", autopost_schedule_command))
+        self.app.add_handler(CommandHandler("autopost_help", autopost_help_command))
+        logger.info("✅ Auto-posting commands registered")
         
         # Callback query handler (must be after conversation handlers)
         self.app.add_handler(CallbackQueryHandler(self.callback_router.route_callback))

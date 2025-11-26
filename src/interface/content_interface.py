@@ -53,10 +53,14 @@ class ContentInterface:
                 # Build channel selection keyboard
                 keyboard_buttons = []
                 for channel in channels:
+                    # Support both dict and object
+                    channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+                    channel_id = channel.get('channel_id') if isinstance(channel, dict) else channel.id
+                    
                     keyboard_buttons.append([
                         InlineKeyboardButton(
-                            f"📺 {channel.name}",
-                            callback_data=f"generate:{channel.id}"
+                            f"📺 {channel_name}",
+                            callback_data=f"generate:{channel_id}"
                         )
                     ])
                 
@@ -106,9 +110,12 @@ class ContentInterface:
             # Store channel ID for generation
             context.user_data['generation_channel_id'] = channel_id
             
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+            
             text = (
                 f"✍️ <b>Генерация контента</b>\n\n"
-                f"Канал: <b>{channel.name}</b>\n\n"
+                f"Канал: <b>{channel_name}</b>\n\n"
                 f"Выберите тему для поста:"
             )
             
@@ -443,10 +450,14 @@ class ContentInterface:
                 # Build channel selection keyboard
                 keyboard_buttons = []
                 for channel in channels:
+                    # Support both dict and object
+                    channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+                    channel_id = channel.get('channel_id') if isinstance(channel, dict) else channel.id
+                    
                     keyboard_buttons.append([
                         InlineKeyboardButton(
-                            f"📺 {channel.name}",
-                            callback_data=f"posts:channel:{channel.id}"
+                            f"📺 {channel_name}",
+                            callback_data=f"posts:channel:{channel_id}"
                         )
                     ])
                 
@@ -523,8 +534,11 @@ class ContentInterface:
                     "published": "✅"
                 }
                 
+                # Support both dict and object
+                channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+                
                 text = (
-                    f"{status_emoji.get(status_filter, '📝')} <b>Посты канала {channel.name}</b>\n\n"
+                    f"{status_emoji.get(status_filter, '📝')} <b>Посты канала {channel_name}</b>\n\n"
                 )
                 
                 if not posts:

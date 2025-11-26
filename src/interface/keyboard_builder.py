@@ -100,22 +100,25 @@ class KeyboardBuilder:
         """Build channel dashboard keyboard.
         
         Args:
-            channel: Channel object
+            channel: Channel object or dict
             
         Returns:
             InlineKeyboardMarkup with dashboard actions
         """
+        # Support both dict and object
+        channel_id = channel['id'] if isinstance(channel, dict) else channel.id
+        
         keyboard = [
             [
-                InlineKeyboardButton("✍️ Создать пост", callback_data=f"generate:{channel.id}"),
-                InlineKeyboardButton("📅 Расписание", callback_data=f"schedule:{channel.id}")
+                InlineKeyboardButton("✍️ Создать пост", callback_data=f"generate:{channel_id}"),
+                InlineKeyboardButton("📅 Расписание", callback_data=f"schedule:{channel_id}")
             ],
             [
-                InlineKeyboardButton("⚙️ Настроить", callback_data=f"channel:{channel.id}:config"),
-                InlineKeyboardButton("📊 Аналитика", callback_data=f"analytics:{channel.id}")
+                InlineKeyboardButton("⚙️ Настроить", callback_data=f"channel:{channel_id}:config"),
+                InlineKeyboardButton("📊 Аналитика", callback_data=f"analytics:{channel_id}")
             ],
             [
-                InlineKeyboardButton("🗑️ Удалить", callback_data=f"channel:{channel.id}:delete")
+                InlineKeyboardButton("🗑️ Удалить", callback_data=f"channel:{channel_id}:delete")
             ],
             [
                 InlineKeyboardButton("⬅️ К списку", callback_data="menu:channels")

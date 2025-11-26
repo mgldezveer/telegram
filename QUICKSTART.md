@@ -64,7 +64,43 @@ DEFAULT_POSTING_FREQUENCY=3
 LOG_LEVEL=INFO
 ```
 
-### 4. Запуск
+### 4. Установка Redis (рекомендуется)
+
+Redis используется для кэширования и значительно улучшает производительность:
+
+**Ключевые возможности:**
+- ✅ Автоматический переход на кэш в памяти, если Redis недоступен
+- ✅ Автоматическое переподключение каждые 60 секунд
+- ✅ Бесшовная миграция данных при восстановлении Redis
+- ✅ Бот продолжает работать без простоев
+
+```bash
+# Windows (Docker - самый простой способ)
+docker run -d -p 6379:6379 --name redis redis:7-alpine
+
+# Linux
+sudo apt-get install redis-server
+sudo systemctl start redis-server
+
+# macOS
+brew install redis
+brew services start redis
+
+# Проверка
+redis-cli ping
+# Должен вернуть: PONG
+```
+
+**Что происходит без Redis:**
+- ⚠️ Бот использует кэш в памяти (ограничен 1000 записями)
+- ⚠️ Кэш теряется при перезапуске
+- ⚠️ Выше расходы на API (нет постоянного кэширования)
+- ✅ Бот продолжает нормально работать
+- ✅ Автоматические попытки переподключения каждые 60 секунд
+
+**Подробная инструкция:** См. [docs/REDIS_SETUP.md](docs/REDIS_SETUP.md)
+
+### 5. Запуск
 
 ```bash
 # С Docker (рекомендуется)
@@ -73,6 +109,7 @@ docker-compose up -d
 # Или локально
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 python run.py
 ```
@@ -128,9 +165,40 @@ A: Добавьте [@userinfobot](https://t.me/userinfobot) в канал и о
 **Q: Бот не отвечает**
 
 A: Проверьте:
-1. Правильность токена в `.env`
-2. Логи: `docker-compose logs bot`
-3. Что бот запущен: `docker-compose ps`
+1. Версию Python: `python --version` (должна быть 3.10+)
+2. Правильность токена в `.env`
+3. Redis подключение: `redis-cli ping`
+4. Логи: `docker-compose logs bot`
+5. Что бот запущен: `docker-compose ps`
+
+**Q: Нужен ли Redis?**
+
+A: Redis опционален, но настоятельно рекомендуется:
+- ✅ Ускоряет работу бота в 2-3 раза
+- ✅ Снижает расходы на API до 50%
+- ✅ Кэширует повторяющиеся запросы
+- ❌ Без Redis бот работает медленнее
+
+**Q: Предупреждение о версии Python**
+
+A: Python 3.9 и ниже устарели. Обновитесь до Python 3.10, 3.11 или 3.12:
+```bash
+# Проверьте версию
+python --version
+
+# Установите новую версию и пересоздайте venv
+python3.11 -m venv venv
+```
+
+**Q: Redis не подключается**
+
+A: Проверьте:
+1. Redis установлен: `redis-cli ping`
+2. Redis запущен: `sudo systemctl status redis-server`
+3. Порт 6379 свободен: `netstat -an | grep 6379`
+4. Настройки в `.env`: `REDIS_URL=redis://localhost:6379/0`
+
+Бот продолжит работать без Redis, используя кэш в памяти.
 
 **Q: Как изменить стиль постов?**
 
@@ -141,6 +209,7 @@ A: Отредактируйте настройки канала в базе да
 A: Зависит от выбранного AI провайдера:
 - Groq: Бесплатный tier доступен, очень низкая стоимость
 - OpenAI: Примерно $0.01-0.03 за пост с GPT-4
+- С Redis: экономия до 50% на повторяющихся запросах
 
 ## Полезные команды
 

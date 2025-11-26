@@ -20,3 +20,6 @@ apscheduler>=3.10.4
 
 # Utilities
 pydantic>=2.5.0
+
+# Telegram MTProto for real statistics
+telethon>=1.34.0

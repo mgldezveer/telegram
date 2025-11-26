@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "SQL Query Optimizer",
+  "description": "Анализирует SQL запросы и работу с базой данных, выявляет N+1 проблемы, предлагает индексы и оптимизации",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "src/models/**/*.py",
+      "src/repositories/**/*.py",
+      "src/database/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Проанализируй работу с базой данных и проверь:\n\n## 1. N+1 Query Problem\n- Есть ли циклы с запросами внутри?\n- Используется ли eager loading (joinedload, selectinload)?\n- Можно ли объединить множественные запросы в один?\n- Используется ли bulk operations для массовых операций?\n\n## 2. Query Optimization\n- Используются ли индексы для WHERE, JOIN, ORDER BY?\n- Выбираются ли только нужные колонки (избегается SELECT *)?\n- Используется ли LIMIT для pagination?\n- Оптимальны ли JOIN операции?\n\n## 3. Connection Management\n- Используется ли connection pooling?\n- Правильно ли закрываются connections?\n- Настроены ли таймауты?\n- Используются ли транзакции правильно?\n\n## 4. ORM Best Practices\n- Правильно ли используется SQLAlchemy?\n- Используются ли relationship() эффективно?\n- Настроен ли lazy loading правильно?\n- Используется ли session scope корректно?\n\n## 5. Data Integrity\n- Используются ли constraints (UNIQUE, NOT NULL, FOREIGN KEY)?\n- Правильно ли обрабатываются IntegrityError?\n- Используются ли транзакции для связанных операций?\n- Есть ли валидация данных перед сохранением?\n\n## 6. Performance Issues\n- Есть ли медленные запросы (можно добавить EXPLAIN)?\n- Нужны ли дополнительные индексы?\n- Можно ли использовать кэширование?\n- Оптимальны ли типы данных в моделях?\n\n## 7. Рекомендации\nПредложи конкретные оптимизации с примерами кода. Укажи на критические проблемы производительности."
+  }
+}

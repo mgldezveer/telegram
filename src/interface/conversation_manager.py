@@ -1,6 +1,7 @@
 """Conversation manager for multi-step user interactions."""
 
 import logging
+import asyncio
 from telegram import Update, ForceReply
 from telegram.ext import (
     ContextTypes,
@@ -12,8 +13,13 @@ from telegram.ext import (
 )
 from datetime import datetime, timedelta
 from .validators import InputValidator
+from .conversation_factory import ConversationHandlerFactory
 
 logger = logging.getLogger(__name__)
+
+# Таймауты для операций
+TELEGRAM_API_TIMEOUT = 10.0  # секунд
+DATABASE_TIMEOUT = 5.0  # секунд
 
 # Conversation states
 CHANNEL_ID, CHANNEL_NAME = range(2)
@@ -40,7 +46,8 @@ class ConversationManager:
         Returns:
             ConversationHandler for custom theme
         """
-        return ConversationHandler(
+        return ConversationHandlerFactory.create_handler(
+            name='custom_theme',
             entry_points=[
                 CallbackQueryHandler(
                     self.start_custom_theme,
@@ -62,8 +69,8 @@ class ConversationManager:
                     pattern='^cancel:'
                 )
             ],
-            conversation_timeout=self.conversation_timeout.total_seconds(),
-            name='custom_theme'
+            per_message=False,  # Mixed handlers: CallbackQuery entry + Message state
+            conversation_timeout=self.conversation_timeout.total_seconds()
         )
     
     def create_channel_registration_handler(self) -> ConversationHandler:
@@ -72,7 +79,8 @@ class ConversationManager:
         Returns:
             ConversationHandler for channel registration
         """
-        return ConversationHandler(
+        return ConversationHandlerFactory.create_handler(
+            name='channel_registration',
             entry_points=[
                 CallbackQueryHandler(
                     self.start_channel_registration,
@@ -100,8 +108,8 @@ class ConversationManager:
                     pattern='^cancel:'
                 )
             ],
-            conversation_timeout=self.conversation_timeout.total_seconds(),
-            name='channel_registration'
+            per_message=False,  # Mixed handlers: CallbackQuery entry + Message state
+            conversation_timeout=self.conversation_timeout.total_seconds()
         )
     
     async def start_channel_registration(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -168,10 +176,13 @@ class ConversationManager:
         
         # Check if bot has access to the channel
         try:
-            chat = await context.bot.get_chat(channel_id)
-            
-            # Check if bot is admin
-            bot_member = await context.bot.get_chat_member(channel_id, context.bot.id)
+            # Параллельные запросы с таймаутом для оптимизации
+            async with asyncio.timeout(TELEGRAM_API_TIMEOUT):
+                chat, bot_member = await asyncio.gather(
+                    context.bot.get_chat(channel_id),
+                    context.bot.get_chat_member(channel_id, context.bot.id),
+                    return_exceptions=False
+                )
             
             if bot_member.status not in ['administrator', 'creator']:
                 await update.message.reply_text(
@@ -199,6 +210,16 @@ class ConversationManager:
             await update.message.reply_text(text, parse_mode='HTML')
             
             return CHANNEL_NAME
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout accessing channel {channel_id}")
+            await update.message.reply_text(
+                "❌ Превышено время ожидания ответа от Telegram\n\n"
+                "Попробуйте еще раз через несколько секунд\n\n"
+                "Отправьте /cancel для отмены",
+                parse_mode='HTML'
+            )
+            return CHANNEL_ID
             
         except Exception as e:
             logger.error(f"Error accessing channel {channel_id}: {e}")
@@ -274,19 +295,15 @@ class ConversationManager:
                     f"✅ <b>Канал успешно зарегистрирован!</b>\n\n"
                     f"📺 Название: <b>{channel_name}</b>\n"
                     f"🆔 ID: <code>{channel_id}</code>\n"
-                    f"📊 Telegram: {channel_title}\n\n"
-                    f"Теперь вы можете управлять каналом через меню <b>Каналы</b>"
+                    f"📊 Telegram: {channel_title}"
                 )
                 
                 await update.message.reply_text(text, parse_mode='HTML')
                 
                 # Show channels menu
                 if self.bot_controller and self.bot_controller.menu_system:
-                    # Create a fake update for menu display
-                    await update.message.reply_text(
-                        "Возвращаюсь в меню каналов...",
-                        parse_mode='HTML'
-                    )
+                    # Show channels menu directly without extra message
+                    await self.bot_controller.menu_system.show_channels_menu(update, context)
             else:
                 await update.message.reply_text(
                     "❌ Ошибка: сервис управления каналами недоступен",
@@ -490,11 +507,11 @@ class ConversationManager:
         
         return ConversationHandler.END
 
-    async def cleanup_expired_conversations(self, context: ContextTypes.DEFAULT_TYPE) -> int:
+    async def cleanup_expired_conversations(self, context: ContextTypes.DEFAULT_TYPE = None) -> int:
         """Clean up expired conversations.
         
         Args:
-            context: Callback context
+            context: Callback context (optional)
             
         Returns:
             Number of cleaned up conversations
@@ -512,6 +529,9 @@ class ConversationManager:
                 self._active_conversations.pop(user_id, None)
                 cleaned += 1
                 logger.info(f"Cleaned up expired conversation for user {user_id}")
+        
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} expired conversations")
         
         return cleaned
     
@@ -544,7 +564,8 @@ class ConversationManager:
         Returns:
             ConversationHandler for post editing
         """
-        return ConversationHandler(
+        return ConversationHandlerFactory.create_handler(
+            name='edit_post',
             entry_points=[
                 CallbackQueryHandler(
                     self.start_edit_post,
@@ -566,8 +587,8 @@ class ConversationManager:
                     pattern='^cancel:'
                 )
             ],
-            conversation_timeout=self.conversation_timeout.total_seconds(),
-            name='edit_post'
+            per_message=False,  # Mixed handlers: CallbackQuery entry + Message state
+            conversation_timeout=self.conversation_timeout.total_seconds()
         )
     
     async def start_edit_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -598,9 +619,10 @@ class ConversationManager:
             from src.models.base import async_session_maker
             from src.repositories.post_repository import PostRepository
             
-            async with async_session_maker() as session:
-                post_repo = PostRepository(session)
-                post = await post_repo.get_by_id(post_id)
+            async with asyncio.timeout(DATABASE_TIMEOUT):
+                async with async_session_maker() as session:
+                    post_repo = PostRepository(session)
+                    post = await post_repo.get_by_id(post_id)
                 
                 if not post:
                     await query.edit_message_text(
@@ -620,6 +642,15 @@ class ConversationManager:
                 await query.edit_message_text(text, parse_mode='HTML')
                 
                 return EDIT_POST_CONTENT
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout loading post {post_id}")
+            await query.edit_message_text(
+                "❌ Превышено время ожидания ответа от базы данных\n\n"
+                "Попробуйте еще раз через несколько секунд",
+                parse_mode='HTML'
+            )
+            return ConversationHandler.END
                 
         except Exception as e:
             logger.error(f"Error starting post edit: {e}")
@@ -676,18 +707,19 @@ class ConversationManager:
             from sqlalchemy import update as sql_update
             from src.models import Post
             
-            async with async_session_maker() as session:
-                # Update post content
-                await session.execute(
-                    sql_update(Post)
-                    .where(Post.id == post_id)
-                    .values(content=new_content)
-                )
-                await session.commit()
-                
-                # Get updated post
-                post_repo = PostRepository(session)
-                post = await post_repo.get_by_id(post_id)
+            async with asyncio.timeout(DATABASE_TIMEOUT):
+                async with async_session_maker() as session:
+                    # Update post content
+                    await session.execute(
+                        sql_update(Post)
+                        .where(Post.id == post_id)
+                        .values(content=new_content)
+                    )
+                    await session.commit()
+                    
+                    # Get updated post
+                    post_repo = PostRepository(session)
+                    post = await post_repo.get_by_id(post_id)
                 
                 # Show success message
                 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -707,6 +739,14 @@ class ConversationManager:
                     reply_markup=keyboard,
                     parse_mode='HTML'
                 )
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout updating post {post_id}")
+            await update.message.reply_text(
+                "❌ Превышено время ожидания ответа от базы данных\n\n"
+                "Попробуйте еще раз через несколько секунд",
+                parse_mode='HTML'
+            )
                 
         except Exception as e:
             logger.error(f"Error updating post {post_id}: {e}")

@@ -31,24 +31,38 @@ class MessageFormatter:
         """Format channel information.
         
         Args:
-            channel: Channel object
+            channel: Channel object or dict
             
         Returns:
             Formatted channel info text
         """
-        status_emoji = "✅" if channel.active else "⏸️"
+        # Support both dict and object
+        if isinstance(channel, dict):
+            active = channel.get('active', True)
+            name = channel.get('name') or channel.get('title', 'Без названия')
+            channel_id = channel.get('id')
+            posting_frequency = channel.get('posting_frequency')
+            themes = channel.get('themes')
+        else:
+            active = channel.active
+            name = channel.name
+            channel_id = channel.id
+            posting_frequency = getattr(channel, 'posting_frequency', None)
+            themes = getattr(channel, 'themes', None)
+        
+        status_emoji = "✅" if active else "⏸️"
         
         text = (
-            f"📺 <b>{channel.name}</b>\n\n"
-            f"🆔 ID: <code>{channel.id}</code>\n"
-            f"📊 Статус: {status_emoji} {'Активен' if channel.active else 'Приостановлен'}\n"
+            f"📺 <b>{name}</b>\n\n"
+            f"🆔 ID: <code>{channel_id}</code>\n"
+            f"📊 Статус: {status_emoji} {'Активен' if active else 'Приостановлен'}\n"
         )
         
-        if hasattr(channel, 'posting_frequency'):
-            text += f"📅 Частота: {channel.posting_frequency} постов/день\n"
+        if posting_frequency:
+            text += f"📅 Частота: {posting_frequency} постов/день\n"
         
-        if hasattr(channel, 'themes') and channel.themes:
-            themes_str = ", ".join(channel.themes[:3])
+        if themes:
+            themes_str = ", ".join(themes[:3])
             text += f"🎯 Темы: {themes_str}\n"
         
         return text

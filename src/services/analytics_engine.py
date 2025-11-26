@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass
-from src.models import Metrics, Post
+from src.models import Metrics, Post, PostStatus
 
 logger = logging.getLogger(__name__)
 
@@ -209,3 +209,136 @@ class AnalyticsEngine:
             )
             # In production, would send notifications to admins
             # For now, just log
+    
+    async def get_channel_analytics(
+        self,
+        channel_id: int,
+        period_start: datetime,
+        period_end: datetime,
+        use_real_stats: bool = True
+    ) -> dict:
+        """Get analytics for a channel.
+        
+        Args:
+            channel_id: ID of the channel
+            period_start: Start of the period
+            period_end: End of the period
+            use_real_stats: Whether to fetch real stats from Telegram (requires Telethon)
+            
+        Returns:
+            Dictionary with analytics data
+        """
+        logger.info(f"Getting analytics for channel {channel_id} from {period_start} to {period_end}")
+        
+        try:
+            from sqlalchemy import select, func
+            from src.models import Post, Metrics, get_session, Channel
+            
+            async for session in get_session():
+                # Get all published posts in the period
+                query = (
+                    select(Post, Metrics)
+                    .join(Metrics, Post.id == Metrics.post_id, isouter=True)
+                    .where(Post.channel_id == channel_id)
+                    .where(Post.status == PostStatus.PUBLISHED)
+                    .where(Post.published_at >= period_start)
+                    .where(Post.published_at <= period_end)
+                )
+                
+                result = await session.execute(query)
+                posts_with_metrics = result.all()
+                
+                if not posts_with_metrics:
+                    logger.info(f"No published posts found for channel {channel_id} in period")
+                    return {'no_data': True}
+                
+                # Calculate totals
+                total_posts = len(posts_with_metrics)
+                total_views = 0
+                total_reactions = 0
+                total_shares = 0
+                total_comments = 0
+                top_posts = []
+                
+                for post, metrics in posts_with_metrics:
+                    if metrics:
+                        total_views += metrics.views
+                        total_reactions += metrics.reactions
+                        total_shares += metrics.shares
+                        total_comments += metrics.comments
+                        
+                        top_posts.append({
+                            'post_id': post.id,
+                            'views': metrics.views,
+                            'engagement_rate': metrics.engagement_rate * 100,  # Convert to percentage
+                            'published_at': post.published_at.isoformat() if post.published_at else None
+                        })
+                
+                # Sort top posts by engagement rate
+                top_posts.sort(key=lambda x: x['engagement_rate'], reverse=True)
+                top_posts = top_posts[:5]  # Top 5
+                
+                # Calculate engagement rate
+                total_engagement = total_reactions + total_shares + total_comments
+                engagement_rate = (total_engagement / total_views * 100) if total_views > 0 else 0
+                
+                # Calculate growth (compare with previous period)
+                previous_period_start = period_start - (period_end - period_start)
+                previous_query = (
+                    select(func.count(Post.id))
+                    .where(Post.channel_id == channel_id)
+                    .where(Post.status == PostStatus.PUBLISHED)
+                    .where(Post.published_at >= previous_period_start)
+                    .where(Post.published_at < period_start)
+                )
+                previous_result = await session.execute(previous_query)
+                previous_posts = previous_result.scalar() or 0
+                
+                growth = 0.0
+                if previous_posts > 0:
+                    growth = ((total_posts - previous_posts) / previous_posts) * 100
+                
+                # Find best posting time (hour with highest avg engagement)
+                best_hour = 18  # Default
+                if posts_with_metrics:
+                    hour_engagement = {}
+                    for post, metrics in posts_with_metrics:
+                        if post.published_at and metrics:
+                            hour = post.published_at.hour
+                            if hour not in hour_engagement:
+                                hour_engagement[hour] = []
+                            hour_engagement[hour].append(metrics.engagement_rate)
+                    
+                    if hour_engagement:
+                        avg_by_hour = {
+                            hour: sum(rates) / len(rates)
+                            for hour, rates in hour_engagement.items()
+                        }
+                        best_hour = max(avg_by_hour.items(), key=lambda x: x[1])[0]
+                
+                best_time = f"{best_hour:02d}:00-{(best_hour+2):02d}:00"
+                
+                logger.info(
+                    f"Analytics for channel {channel_id}: "
+                    f"{total_posts} posts, {total_views} views, {engagement_rate:.2f}% engagement"
+                )
+                
+                result = {
+                    'views': total_views,
+                    'reactions': total_reactions,
+                    'shares': total_shares,
+                    'comments': total_comments,
+                    'engagement_rate': engagement_rate,
+                    'total_posts': total_posts,
+                    'growth': growth,
+                    'best_time': best_time,
+                    'top_posts': top_posts
+                }
+                
+                break  # Exit after first session
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting analytics for channel {channel_id}: {e}", exc_info=True)
+            return {'no_data': True}

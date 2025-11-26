@@ -60,8 +60,12 @@ class AnalyticsInterface:
             
             keyboard_buttons = []
             for channel in channels:
-                button_text = f"📈 {channel.name}"
-                callback_data = f"analytics:{channel.id}"
+                # Support both dict and object
+                channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+                channel_id = channel.get('channel_id') if isinstance(channel, dict) else channel.id
+                
+                button_text = f"📈 {channel_name}"
+                callback_data = f"analytics:{channel_id}"
                 keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
             
             # Add back button
@@ -121,10 +125,13 @@ class AnalyticsInterface:
             # Get analytics data
             metrics = await self._get_channel_metrics(channel_id)
             
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+            
             if not metrics or metrics.get('no_data'):
                 # No data available
                 text = (
-                    f"📈 <b>Аналитика: {channel.name}</b>\n\n"
+                    f"📈 <b>Аналитика: {channel_name}</b>\n\n"
                     f"📊 <b>Данные недоступны</b>\n\n"
                     f"<i>Возможные причины:</i>\n"
                     f"• Канал недавно добавлен\n"
@@ -146,7 +153,7 @@ class AnalyticsInterface:
                 return
             
             # Format analytics
-            text = self.formatter.format_analytics(channel.name, metrics)
+            text = self.formatter.format_analytics(channel_name, metrics)
             
             # Build keyboard with actions
             keyboard_buttons = [
@@ -156,11 +163,18 @@ class AnalyticsInterface:
             ]
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
             
-            await update.callback_query.edit_message_text(
-                text=text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
+            try:
+                await update.callback_query.edit_message_text(
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                # If message is not modified, just answer the callback
+                if "message is not modified" in str(e).lower():
+                    await update.callback_query.answer("Данные уже актуальны")
+                else:
+                    raise
             
         except Exception as e:
             logger.error(f"Error showing analytics: {e}")
@@ -206,8 +220,11 @@ class AnalyticsInterface:
                 )
                 return
             
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+            
             # Format detailed report
-            text = self._format_detailed_report(channel.name, metrics)
+            text = self._format_detailed_report(channel_name, metrics)
             
             keyboard = self.keyboard_builder.build_back_button(f"analytics:{channel_id}")
             

@@ -12,12 +12,21 @@ def setup_logging(log_level: str = "INFO", log_file: str = "bot.log") -> None:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     
-    # Create logger
+    # Get root logger
     logger = logging.getLogger()
     logger.setLevel(log_level)
     
-    # Remove existing handlers
+    # Remove ALL existing handlers from root and all child loggers
     logger.handlers.clear()
+    
+    # Prevent propagation to avoid duplicate logs
+    logger.propagate = False
+    
+    # Clear handlers from all existing loggers
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        existing_logger = logging.getLogger(name)
+        existing_logger.handlers.clear()
+        existing_logger.propagate = True
     
     # Console handler with UTF-8 encoding
     console_handler = logging.StreamHandler(sys.stdout)

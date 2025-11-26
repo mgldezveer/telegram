@@ -83,16 +83,26 @@ class ChannelInterface:
                 )
                 return
             
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+            channel_id_val = channel.get('channel_id') if isinstance(channel, dict) else channel.id
+            
             text = (
-                f"⚙️ <b>Настройки канала: {channel.name}</b>\n\n"
-                f"🆔 ID: <code>{channel.id}</code>\n"
+                f"⚙️ <b>Настройки канала: {channel_name}</b>\n\n"
+                f"🆔 ID: <code>{channel_id_val}</code>\n"
             )
             
-            if hasattr(channel, 'posting_frequency'):
-                text += f"📅 Частота: {channel.posting_frequency} постов/день\n"
-            
-            if hasattr(channel, 'content_style'):
-                text += f"🎨 Стиль: {channel.content_style.tone}\n"
+            # Check for posting frequency
+            if isinstance(channel, dict):
+                if 'posting_frequency' in channel:
+                    text += f"📅 Частота: {channel['posting_frequency']} постов/день\n"
+                if 'content_style' in channel and channel['content_style']:
+                    text += f"🎨 Стиль: {channel['content_style'].get('tone', 'не указан')}\n"
+            else:
+                if hasattr(channel, 'posting_frequency'):
+                    text += f"📅 Частота: {channel.posting_frequency} постов/день\n"
+                if hasattr(channel, 'content_style'):
+                    text += f"🎨 Стиль: {channel.content_style.tone}\n"
             
             text += "\n<i>Настройка параметров будет реализована в следующих версиях</i>"
             
@@ -131,10 +141,13 @@ class ChannelInterface:
                 )
                 return
             
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
+            
             # Show confirmation dialog
             text = self.formatter.format_confirmation(
                 action="Удаление канала",
-                description=f"Вы собираетесь удалить канал <b>{channel.name}</b>",
+                description=f"Вы собираетесь удалить канал <b>{channel_name}</b>",
                 consequences=(
                     "• Все настройки канала будут удалены\n"
                     "• История постов будет архивирована\n"
@@ -146,7 +159,7 @@ class ChannelInterface:
             keyboard = self.keyboard_builder.build_confirmation(
                 action="delete_channel",
                 data=str(channel_id),
-                description=f"Удалить {channel.name}"
+                description=f"Удалить {channel_name}"
             )
             
             await update.callback_query.edit_message_text(
@@ -182,7 +195,8 @@ class ChannelInterface:
                 )
                 return
             
-            channel_name = channel.name
+            # Support both dict and object
+            channel_name = channel.get('name') if isinstance(channel, dict) else channel.name
             
             # Delete channel
             if self.bot_controller and self.bot_controller.channel_manager:

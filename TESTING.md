@@ -269,18 +269,64 @@ python run.py
 
 ## Automated Tests
 
-Если вы хотите запустить автоматические тесты:
+### Existing Unit Tests
+
+The project includes unit tests for core interface components:
 
 ```bash
-# Установите pytest
+# Install pytest if not already installed
 pip install pytest pytest-asyncio
 
-# Запустите тесты
+# Run existing tests
 pytest tests/ -v
 
-# С покрытием кода
+# Run with coverage
 pytest tests/ --cov=src --cov-report=html
 ```
+
+**Current Test Coverage:**
+- ✅ Callback router tests (`tests/test_callback_router.py`)
+- ✅ State cleanup tests (`tests/test_state_cleanup.py`)
+
+### Optional Property-Based Tests
+
+For enhanced test coverage, you can implement property-based tests using Hypothesis:
+
+```bash
+# Install hypothesis
+pip install hypothesis
+
+# Run property tests (when implemented)
+pytest tests/property/ -v
+```
+
+**Optional Test Suites** (see `.kiro/specs/telegram-bot-interface/tasks.md`):
+- Menu system properties (5 tests)
+- Channel management properties (4 tests)
+- Content generation properties (3 tests)
+- Analytics properties (3 tests)
+- Settings properties (3 tests)
+- Quick actions properties (3 tests)
+- Scheduling properties (2 tests)
+- Notifications properties (2 tests)
+- Help system properties (3 tests)
+- Confirmation dialogs properties (3 tests)
+
+### Optional Integration Tests
+
+For complete workflow testing:
+
+```bash
+# Run integration tests (when implemented)
+pytest tests/integration/ -v
+```
+
+**Optional Integration Test Suites**:
+- Channel registration flow
+- Content generation flow
+- Analytics viewing flow
+- Settings modification flow
+- Backend service integration
 
 ## Common Issues
 

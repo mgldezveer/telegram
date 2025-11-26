@@ -45,6 +45,12 @@ active_channels = Gauge('active_channels', 'Number of active channels')
 queue_size = Gauge('queue_size', 'Size of content queue', ['channel_id'])
 error_count = Counter('errors_total', 'Total errors', ['category', 'severity'])
 
+# Cache metrics
+cache_hits = Counter('cache_hits_total', 'Total cache hits', ['backend'])
+cache_misses = Counter('cache_misses_total', 'Total cache misses', ['backend'])
+cache_size = Gauge('cache_size', 'Current cache size', ['backend'])
+cache_memory_usage = Gauge('cache_memory_usage_bytes', 'Cache memory usage in bytes', ['backend'])
+
 
 def track_generation_time(func: Callable) -> Callable:
     """Decorator to track content generation time.
@@ -220,6 +226,26 @@ def update_active_channels_count(count: int) -> None:
     active_channels.set(count)
 
 
+def update_cache_metrics(backend: str, stats: dict) -> None:
+    """Update cache metrics from cache statistics.
+    
+    Args:
+        backend: Cache backend ('redis' or 'memory')
+        stats: Cache statistics dictionary
+    """
+    if 'total_keys' in stats:
+        cache_size.labels(backend=backend).set(stats['total_keys'])
+    
+    if 'hits' in stats:
+        cache_hits.labels(backend=backend).inc(stats['hits'])
+    
+    if 'misses' in stats:
+        cache_misses.labels(backend=backend).inc(stats['misses'])
+    
+    if 'memory_usage_bytes' in stats:
+        cache_memory_usage.labels(backend=backend).set(stats['memory_usage_bytes'])
+
+
 async def metrics_handler(request):
     """Prometheus metrics endpoint."""
     metrics_data = generate_latest()
@@ -230,20 +256,38 @@ async def metrics_handler(request):
 
 
 async def health_handler(request):
-    """Health check endpoint."""
-    health_status = await health_check.check()
+    """Health check endpoint with enhanced status."""
+    # Get basic health status
+    basic_health = await health_check.check()
     
-    if health_status['status'] == 'healthy':
+    # Get enhanced health status if available
+    health_service = request.app.get('health_service')
+    if health_service:
+        try:
+            enhanced_status = await health_service.get_health_status()
+            health_status = enhanced_status.to_dict()
+            
+            # Merge with basic health
+            health_status['uptime_seconds'] = basic_health['uptime_seconds']
+            health_status['basic_components'] = basic_health['components']
+        except Exception as e:
+            logger.error(f"Error getting enhanced health status: {e}")
+            health_status = basic_health
+    else:
+        health_status = basic_health
+    
+    if health_status['status'] in ('healthy', 'degraded'):
         return web.json_response(health_status, status=200)
     else:
         return web.json_response(health_status, status=503)
 
 
-async def start_monitoring_server(port: int = 9090) -> web.AppRunner:
+async def start_monitoring_server(port: int = 9090, health_service=None) -> web.AppRunner:
     """Start monitoring HTTP server.
     
     Args:
         port: Port number for the monitoring server (default: 9090)
+        health_service: Optional HealthCheckService instance for enhanced health checks
         
     Returns:
         AppRunner instance for graceful shutdown
@@ -252,6 +296,11 @@ async def start_monitoring_server(port: int = 9090) -> web.AppRunner:
         OSError: If port is already in use
     """
     app = web.Application()
+    
+    # Store health service in app for access in handlers
+    if health_service:
+        app['health_service'] = health_service
+    
     app.router.add_get('/metrics', metrics_handler)
     app.router.add_get('/health', health_handler)
     

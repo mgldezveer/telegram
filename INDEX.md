@@ -26,6 +26,9 @@ Complete index of all project documentation and resources.
 | [FAQ.md](FAQ.md) | Frequently asked questions | All users |
 | [CHEATSHEET.md](CHEATSHEET.md) | Quick command reference | All users |
 | [TESTING.md](TESTING.md) | How to test the bot | Users & QA |
+| [AUTOPOST_README.md](AUTOPOST_README.md) | Auto-posting system guide | Admins |
+| [AUTOPOST_QUICKSTART.md](AUTOPOST_QUICKSTART.md) | Auto-posting quick start | Admins |
+| [AUTOPOST_DATABASE.md](AUTOPOST_DATABASE.md) | Auto-posting database schema | Developers |
 
 ---
 

@@ -68,6 +68,17 @@ make clean                      # Clean temp files
 /broadcast "message"            # Send to all channels
 ```
 
+### Auto-Posting (Admin Only)
+```
+/autopost_help                                      # Show auto-posting help
+/autopost_add_channel -1001234567890 "My Channel"  # Add channel for auto-posting
+/autopost_list_channels                             # List auto-posting channels
+/autopost_generate -1001234567890 technology        # Generate post for channel
+/autopost_queue                                     # View post queue (all channels)
+/autopost_queue -1001234567890                      # View queue for specific channel
+/autopost_schedule -1001234567890 09:00,15:00,21:00 # Set posting schedule
+```
+
 ## Configuration (.env)
 
 ### Required

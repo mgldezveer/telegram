@@ -230,3 +230,56 @@ class ChannelManager:
         except Exception as e:
             logger.error(f"Error getting all channels: {e}")
             return []
+
+    async def get_channel_info(self, channel_id: int) -> Optional[dict]:
+        """Get channel information by database ID.
+        
+        Args:
+            channel_id: Database ID of the channel
+            
+        Returns:
+            Channel info dictionary or None if not found
+        """
+        from src.models.base import async_session_maker
+        from src.repositories.channel_repository import ChannelRepository
+        
+        try:
+            async with async_session_maker() as session:
+                repo = ChannelRepository(session)
+                channel = await repo.get_by_id(channel_id)
+                
+                if not channel:
+                    logger.warning(f"Channel with ID {channel_id} not found in database")
+                    return None
+                
+                # Try to get info from Telegram
+                try:
+                    chat = await self.bot.get_chat(channel.telegram_id)
+                    return {
+                        'id': channel.id,
+                        'telegram_id': channel.telegram_id,
+                        'title': chat.title,
+                        'name': channel.name,
+                        'username': chat.username,
+                        'type': chat.type,
+                        'description': chat.description,
+                        'active': channel.active
+                    }
+                except TelegramError as e:
+                    logger.warning(f"Cannot get Telegram info for channel {channel.telegram_id}: {e}")
+                    # Return database info as fallback
+                    return {
+                        'id': channel.id,
+                        'telegram_id': channel.telegram_id,
+                        'title': channel.name,
+                        'name': channel.name,
+                        'username': None,
+                        'type': 'channel',
+                        'description': None,
+                        'active': channel.active,
+                        'from_db': True
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error getting channel info for {channel_id}: {e}")
+            return None

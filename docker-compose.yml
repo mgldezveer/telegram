@@ -41,7 +41,7 @@ services:
     image: redis:7-alpine
     container_name: bot-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     networks:
@@ -53,6 +53,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    environment:
+      # Optional: Set Redis password
+      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+      # To use password, update command to:
+      # command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
 
   celery-worker:
     build: .

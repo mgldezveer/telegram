@@ -8,6 +8,7 @@ An AI-powered Telegram bot that automates channel management and content creatio
 
 - **Automated Content Generation**: AI-powered content creation using LLM APIs (OpenAI/Claude)
 - **Interactive Bot Interface**: Intuitive button-based interface with inline keyboards and menus
+- **Vibe Coding System**: Multi-role content generation with 6 specialized perspectives (Main Brain, PRD, Architect, Code, Debug, Child)
 - **Content Optimization**: Automatic enhancement for engagement, readability, and hashtag generation
 - **Intelligent Scheduling**: Optimal posting times based on audience activity patterns
 - **Multi-Channel Management**: Handle multiple channels simultaneously with isolated queues
@@ -41,14 +42,17 @@ The system follows a modular, event-driven architecture with these core componen
 
 ## Prerequisites
 
-- Python 3.11+
-- PostgreSQL 15+
-- Redis 7+
+- **Python 3.10+** (Python 3.11+ recommended, Python 3.9 and below are deprecated)
+- PostgreSQL 15+ (optional, SQLite used by default)
+- **Redis 7+** (optional but recommended for caching and performance)
 - Docker and Docker Compose (for deployment)
 - Telegram Bot Token (from @BotFather)
 - Groq API Key (recommended) or OpenAI API Key
 
-**Note for Windows users:** The bot automatically configures UTF-8 encoding for proper display of international characters (including Cyrillic) in logs and console output.
+**Important Notes:**
+- **Python Version:** Python 3.10 or higher is required. Python 3.9 and below are no longer supported. The bot validates your Python version at startup and displays clear warnings if an upgrade is needed.
+- **Redis:** While optional, Redis is highly recommended for production use to enable response caching and reduce API costs. If Redis is unavailable, the bot automatically falls back to in-memory caching with automatic reconnection attempts.
+- **Windows Users:** The bot automatically configures UTF-8 encoding for proper display of international characters (including Cyrillic) in logs and console output.
 
 ## Installation
 
@@ -98,8 +102,14 @@ DATABASE_URL=postgresql://user:password@localhost:5432/botdb
 DB_POOL_SIZE=10                 # Default: 10
 DB_ECHO=false                   # Set to true for SQL query logging
 
-# Redis (Optional - defaults to localhost)
+# Redis (Recommended for production)
+# Redis is used for caching LLM responses and session management
+# If Redis is unavailable, the bot will fall back to in-memory caching
 REDIS_URL=redis://localhost:6379/0
+REDIS_HOST=localhost            # Default: localhost
+REDIS_PORT=6379                 # Default: 6379
+REDIS_PASSWORD=                 # Optional: Redis password
+REDIS_DB=0                      # Default: 0
 REDIS_MAX_CONNECTIONS=50        # Default: 50
 
 # Scheduling (Optional)
@@ -114,7 +124,67 @@ LOG_LEVEL=INFO                  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 DEBUG=false                     # Set to true for debug mode
 ```
 
-### 5. Test Bot Connection (Optional but Recommended)
+### 5. Set Up Redis (Recommended)
+
+Redis is optional but highly recommended for production use. It provides caching for LLM responses, reducing API costs and improving performance.
+
+**Key Features:**
+- ✅ Automatic fallback to in-memory cache if Redis is unavailable
+- ✅ Automatic reconnection every 60 seconds when Redis becomes available
+- ✅ Seamless data migration from memory to Redis on reconnect
+- ✅ No downtime - bot continues working without Redis
+
+**Windows:**
+```bash
+# Option 1: Using Chocolatey
+choco install redis-64
+
+# Option 2: Using WSL2
+wsl --install
+wsl
+sudo apt-get update
+sudo apt-get install redis-server
+redis-server
+
+# Option 3: Using Docker (Recommended)
+docker run -d -p 6379:6379 --name redis redis:7-alpine
+```
+
+**Linux:**
+```bash
+sudo apt-get update
+sudo apt-get install redis-server
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+```
+
+**macOS:**
+```bash
+brew install redis
+brew services start redis
+```
+
+**Docker (All platforms):**
+```bash
+docker run -d -p 6379:6379 --name redis redis:7-alpine
+```
+
+**Verify Redis is running:**
+```bash
+redis-cli ping
+# Should return: PONG
+```
+
+**What happens without Redis:**
+- ⚠️ Bot uses in-memory cache (limited to 1000 entries)
+- ⚠️ Cache is lost on restart
+- ⚠️ Higher API costs (no persistent caching)
+- ✅ Bot continues to function normally
+- ✅ Automatic reconnection attempts every 60 seconds
+
+For detailed Redis setup instructions, see [docs/REDIS_SETUP.md](docs/REDIS_SETUP.md).
+
+### 6. Test Bot Connection (Optional but Recommended)
 
 ```bash
 # Quick test to verify bot token and connectivity
@@ -123,7 +193,7 @@ python test_bot.py
 
 Send `/start` or `/test` to your bot in Telegram to confirm it's working.
 
-### 6. Initialize Database
+### 7. Initialize Database
 
 ```bash
 # Initialize database tables
@@ -169,10 +239,11 @@ The bot provides an intuitive button-based interface for easy management, implem
 - **MenuSystem** (`src/interface/menu_system.py`): Manages menu navigation and display logic
 - **MessageFormatter** (`src/interface/message_formatter.py`): Formats messages with consistent styling and emojis
 - **ChannelInterface** (`src/interface/channel_interface.py`): Handles channel management interactions (in progress)
+- **VibeCodingInterface** (`src/interface/vibe_coding_interface.py`): Manages vibe coding menu and content generation
 
-The callback routing system automatically handles button clicks and routes them to the appropriate handlers based on callback data patterns (e.g., `menu:main`, `channel:123:dashboard`, `quick:generate`).
+The callback routing system automatically handles button clicks and routes them to the appropriate handlers based on callback data patterns (e.g., `menu:main`, `channel:123:dashboard`, `quick:generate`, `vibe:full`, `vibe:role:main_brain`).
 
-**Implementation Status**: The interface is 100% complete (26/26 main tasks). All core components including menus, routing, formatting, pagination, channel management, content generation with post viewing/editing, analytics, settings, scheduling (fully integrated), and state management with automatic cleanup are fully functional and production-ready. Optional work includes comprehensive property-based testing.
+**Implementation Status**: ✅ **COMPLETE** - The interface is 100% functional and production-ready. All core components including menus, routing, formatting, pagination, channel management, content generation with post viewing/editing, analytics, settings, scheduling, and state management with automatic cleanup are fully implemented. Optional property-based testing tasks remain for enhanced test coverage.
 
 #### Available Menus
 
@@ -197,6 +268,15 @@ The callback routing system automatically handles button clicks and routes them 
   - `theme <theme>` - Specify content theme
 - `/stop` - Emergency stop - pause all operations immediately
 
+#### Auto-Posting Commands (Admin Only)
+
+- `/autopost_add_channel <channel_id> <name>` - Add channel for auto-posting
+- `/autopost_list_channels` - List all auto-posting channels
+- `/autopost_generate <channel_id> <theme>` - Generate post for specific channel
+- `/autopost_queue [channel_id]` - View post queue (optionally filtered by channel)
+- `/autopost_schedule <channel_id> <time_slots>` - Add posting schedule (e.g., 09:00,15:00,21:00)
+- `/autopost_help` - Show auto-posting help and available commands
+
 ### Quick Actions
 
 From the main menu, you can:
@@ -206,6 +286,7 @@ From the main menu, you can:
 - **✍️ Content** - Create, schedule, and manage posts
 - **📈 Analytics** - View performance metrics and reports
 - **⚙️ Settings** - Configure bot behavior with interactive toggles
+- **🎨 Vibe Coding** - Access multi-role content generation system
 
 ## Channel Management
 
@@ -275,6 +356,39 @@ Use the interactive scheduler to plan content:
 4. Select date and time with inline buttons
 5. Choose channel and content
 6. Confirm scheduling with preview
+
+## Vibe Coding System
+
+### What is Vibe Coding?
+
+Vibe Coding is a multi-role content generation approach that creates comprehensive solutions by viewing problems through 6 specialized perspectives:
+
+1. **🧠 Main Brain** - High-level vision and strategic goals
+2. **📋 PRD** - Detailed product requirements and acceptance criteria
+3. **🏗️ Architect** - Technical architecture and design patterns
+4. **💻 Code** - Implementation and best practices
+5. **🐛 Debug** - Testing, validation, and quality assurance
+6. **👶 Child** - Simple explanations accessible to everyone
+
+### Using Vibe Coding
+
+Access the Vibe Coding menu from the main menu:
+
+1. Click **🎨 Vibe Coding** button
+2. Choose an option:
+   - **🎯 Full Workflow** - Generate content from all 6 roles sequentially
+   - **🧠 By Role** - Select a specific role for targeted generation
+   - **✏️ Change Topic** - Switch between predefined topics or enter custom ones
+
+### Available Topics
+
+- 🤖 Telegram Bot Development
+- 🌐 Web Application Development
+- 📱 Mobile App Development
+- 🎮 Game Development
+- 🔧 API Service Development
+
+For detailed guidance, see [Vibe Coding Guide](VIBE_CODING_GUIDE.md) and [Quick Start](VIBE_QUICK_START.md).
 
 ## Analytics and Monitoring
 
@@ -378,6 +492,7 @@ Pre-configured dashboards for:
 telegram-bot/
 ├── src/
 │   ├── bot/
+│   │   ├── controller.py   # Main bot controller with all integrations
 │   │   ├── handlers/       # Command and message handlers
 │   │   ├── middleware/     # Middleware components
 │   │   └── utils/          # Utility functions
@@ -386,7 +501,17 @@ telegram-bot/
 │   │   ├── content_optimizer.py
 │   │   ├── scheduler_service.py
 │   │   ├── channel_manager.py
-│   │   └── analytics_engine.py
+│   │   ├── analytics_engine.py
+│   │   └── vibe_coding_engine.py  # Vibe coding system
+│   ├── interface/          # User interface components
+│   │   ├── menu_system.py
+│   │   ├── callback_router.py
+│   │   ├── channel_interface.py
+│   │   ├── content_interface.py
+│   │   ├── analytics_interface.py
+│   │   ├── settings_interface.py
+│   │   ├── schedule_interface.py
+│   │   └── vibe_coding_interface.py  # Vibe coding UI
 │   ├── models/             # Data models
 │   └── config.py           # Configuration
 ├── tests/
@@ -397,6 +522,8 @@ telegram-bot/
 ├── .env.example
 ├── requirements.txt
 ├── docker-compose.yml
+├── VIBE_CODING_GUIDE.md    # Vibe coding documentation
+├── VIBE_QUICK_START.md     # Vibe coding quick start
 └── main.py
 ```
 
@@ -426,14 +553,177 @@ pg_dump -h localhost -U username -d botdb -f backup.sql
 psql -h localhost -U username -d botdb -f backup.sql
 ```
 
+## Health Monitoring
+
+The bot provides a comprehensive health check endpoint to monitor system status:
+
+```bash
+# Check overall health
+curl http://localhost:9090/health
+
+# Response includes:
+# - Bot status
+# - Database connectivity
+# - Redis connectivity (connected/fallback mode)
+# - Cache mode (redis/memory)
+# - Python version
+# - Uptime
+# - Component health details
+```
+
+**Health Check Response Example (Redis Connected):**
+```json
+{
+  "status": "healthy",
+  "bot": "running",
+  "database": "connected",
+  "redis": "connected",
+  "cache_mode": "redis",
+  "python_version": "3.11.0",
+  "uptime_seconds": 3600,
+  "components": {
+    "cache": {
+      "status": "healthy",
+      "type": "redis",
+      "connected": true
+    }
+  }
+}
+```
+
+**Health Check Response Example (Redis Unavailable):**
+```json
+{
+  "status": "healthy",
+  "bot": "running",
+  "database": "connected",
+  "redis": "disconnected",
+  "cache_mode": "memory",
+  "python_version": "3.11.0",
+  "uptime_seconds": 3600,
+  "components": {
+    "cache": {
+      "status": "degraded",
+      "type": "memory",
+      "connected": false,
+      "reconnection_active": true
+    }
+  }
+}
+```
+
+**Cache Status Indicators:**
+- `redis` - Using Redis cache (optimal performance)
+- `memory` - Using in-memory fallback cache (reduced performance)
+- `reconnection_active` - Attempting to reconnect to Redis every 60 seconds
+
 ## Troubleshooting
+
+### Python Version Warnings
+
+**Warning:** "⚠️ Python 3.9 is deprecated. Please upgrade to Python 3.10 or higher for continued support."
+
+**What this means:**
+- Python 3.9 reached end-of-life and no longer receives security updates
+- Some dependencies require Python 3.10+
+- The bot will still run but with reduced support
+
+**Solution:**
+1. Check your Python version: `python --version`
+2. Upgrade to Python 3.10, 3.11, or 3.12 (recommended)
+3. Recreate virtual environment with new Python version:
+   ```bash
+   rm -rf venv
+   python3.11 -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate     # Windows
+   pip install -r requirements.txt
+   ```
+
+**Supported Python Versions:**
+- ✅ Python 3.12 - Fully supported (latest)
+- ✅ Python 3.11 - Fully supported (recommended)
+- ✅ Python 3.10 - Fully supported
+- ⚠️ Python 3.9 - Deprecated (warning shown)
+- ❌ Python 3.8 and below - Not supported
+
+### Redis Connection Issues
+
+**Warning:** "⚠️ Failed to connect to Redis. Using fallback in-memory cache. Will retry connection every 60 seconds."
+
+**What this means:**
+- Redis is not available or not configured
+- Bot automatically switched to in-memory cache
+- Bot will attempt to reconnect every 60 seconds
+- No manual intervention required
+
+**Causes and Solutions:**
+
+1. **Redis not installed:**
+   - Install Redis following the setup instructions above
+   - Verify installation: `redis-cli ping`
+   - See [docs/REDIS_SETUP.md](docs/REDIS_SETUP.md) for detailed guide
+
+2. **Redis not running:**
+   - Start Redis: `redis-server` (or `sudo systemctl start redis-server` on Linux)
+   - Check status: `redis-cli ping` (should return PONG)
+   - For Docker: `docker start redis`
+
+3. **Wrong connection parameters:**
+   - Verify `REDIS_URL` in `.env` file
+   - Check host, port, and password settings
+   - Default: `redis://localhost:6379/0`
+   - Test connection: `redis-cli -h localhost -p 6379 ping`
+
+4. **Firewall blocking connection:**
+   - Check firewall rules
+   - Ensure port 6379 is accessible
+   - For Windows: Add firewall rule for port 6379
+
+**Impact of running without Redis:**
+- ⚠️ In-memory cache limited to 1000 entries (vs unlimited with Redis)
+- ⚠️ Cache cleared on bot restart
+- ⚠️ Higher API costs (no persistent caching)
+- ⚠️ Slightly slower performance
+- ✅ Bot continues to function normally
+- ✅ Automatic reconnection when Redis becomes available
+- ✅ Seamless migration from memory to Redis cache
+
+**Monitoring Redis Status:**
+```bash
+# Check health endpoint
+curl http://localhost:9090/health
+
+# Look for:
+# "cache_mode": "redis" (connected) or "memory" (fallback)
+# "reconnection_active": true (attempting to reconnect)
+```
+
+### ConversationHandler Warnings
+
+**Warning:** "PTBUserWarning: If 'per_message=False', 'CallbackQueryHandler' will not be tracked..."
+
+**Status:** ✅ **RESOLVED** - This warning has been eliminated in the latest version.
+
+**What was fixed:**
+- Implemented automatic detection of CallbackQueryHandler in conversations
+- All ConversationHandlers now use proper `per_message=True` configuration
+- Factory pattern ensures consistent configuration across all handlers
+
+**If you still see this warning:**
+1. Update to the latest version: `git pull`
+2. Restart the bot: `python run.py` or `docker-compose restart bot`
+3. Check logs - warning should be gone
+4. If warning persists, report as a bug
 
 ### Bot Not Responding
 
 1. Check bot token is correct in `.env`
-2. Verify bot is running: `docker-compose ps`
-3. Check logs: `docker-compose logs bot`
-4. Verify network connectivity
+2. Verify Python version is 3.10 or higher
+3. Verify bot is running: `docker-compose ps`
+4. Check logs: `docker-compose logs bot`
+5. Verify network connectivity
+6. Check Redis connectivity (if using)
 
 ### Content Generation Failures
 
@@ -441,6 +731,7 @@ psql -h localhost -U username -d botdb -f backup.sql
 2. Verify API key validity
 3. Review error logs for patterns
 4. Check fallback provider configuration
+5. Verify Redis cache is working (check health endpoint)
 
 ### Publishing Delays
 
@@ -448,6 +739,7 @@ psql -h localhost -U username -d botdb -f backup.sql
 2. Verify channel permissions
 3. Review scheduler queue status
 4. Check for rate limiting
+5. Verify Redis connectivity for queue management
 
 ## Contributing
 
@@ -496,11 +788,19 @@ For support and questions:
 - 💡 **[Examples](EXAMPLES.md)** - Real-world usage examples and workflows
 - ❓ **[FAQ](FAQ.md)** - Frequently asked questions
 
+### Vibe Coding Documentation (🆕)
+- 🎨 **[Vibe Coding Guide](VIBE_CODING_GUIDE.md)** - Complete guide to the vibe coding system (Russian)
+- 🚀 **[Vibe Quick Start](VIBE_QUICK_START.md)** - Get started with vibe coding in minutes (Russian)
+- 🧪 **[Demo Script](demo_vibe_coding.py)** - Interactive demonstration
+- ✅ **[Integration Tests](test_vibe_integration.py)** - Verify vibe coding functionality
+
 ### Technical Documentation
 - 🚢 **[Deployment Guide](DEPLOYMENT.md)** - Production deployment instructions
 - 🧪 **[Testing Guide](TESTING.md)** - How to test the bot thoroughly
 - 📊 **[Project Summary](PROJECT_SUMMARY.md)** - Technical overview and architecture
 - 📝 **[Specification](/.kiro/specs/ai-content-bot/)** - Complete spec documents (requirements, design, tasks)
+- 🏗️ **[Infrastructure Improvements](docs/INFRASTRUCTURE_IMPROVEMENTS.md)** - Redis caching, Python 3.10+, and performance enhancements
+- 🔴 **[Redis Setup Guide](docs/REDIS_SETUP.md)** - Complete Redis installation and configuration guide
 - 📚 **[Documentation Index](INDEX.md)** - Complete index of all documentation
 - 🎉 **[Thank You](THANK_YOU.md)** - Completion message and next steps
 

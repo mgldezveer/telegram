@@ -15,16 +15,260 @@
    - Отправьте `/start`
    - Если нет ответа - бот может быть остановлен
 
-2. **Проверьте интернет-соединение**
+2. **Проверьте версию Python**
+   - Убедитесь, что используется Python 3.10 или выше
+   - Проверьте: `python --version`
+   - Python 3.9 и ниже больше не поддерживаются
+
+3. **Проверьте интернет-соединение**
    - Убедитесь, что у вас есть доступ к Telegram
    - Попробуйте открыть другие чаты
 
-3. **Перезапустите диалог**
+4. **Проверьте Redis подключение**
+   - Если используется Redis, убедитесь что он запущен
+   - Проверьте: `redis-cli ping` (должен вернуть PONG)
+   - Бот может работать медленнее без Redis
+
+5. **Перезапустите диалог**
    - Отправьте `/start` снова
    - Попробуйте через несколько минут
 
-4. **Обратитесь к администратору**
+6. **Обратитесь к администратору**
    - Если проблема сохраняется более 5 минут
+
+---
+
+## ⚙️ Проблемы с инфраструктурой
+
+### Предупреждения о версии Python
+
+**Предупреждение:** "Python 3.9 is deprecated. Please upgrade to Python 3.10 or higher."
+
+**Причина:**
+- Python 3.9 больше не получает обновления безопасности
+- Некоторые зависимости требуют Python 3.10+
+
+**Решение:**
+
+1. **Проверьте текущую версию:**
+   ```bash
+   python --version
+   ```
+
+2. **Установите Python 3.10 или выше:**
+   
+   **Windows:**
+   - Скачайте с [python.org](https://www.python.org/downloads/)
+   - Или используйте: `winget install Python.Python.3.11`
+
+   **Linux:**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install python3.11
+   ```
+
+   **macOS:**
+   ```bash
+   brew install python@3.11
+   ```
+
+3. **Пересоздайте виртуальное окружение:**
+   ```bash
+   # Удалите старое окружение
+   rm -rf venv
+   
+   # Создайте новое с Python 3.10+
+   python3.11 -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate     # Windows
+   
+   # Переустановите зависимости
+   pip install -r requirements.txt
+   ```
+
+### Проблемы с Redis
+
+**Предупреждение:** "Failed to connect to Redis. Using fallback in-memory cache."
+
+**Причины и решения:**
+
+1. **Redis не установлен**
+   
+   **Решение:**
+   
+   **Windows:**
+   ```powershell
+   # Используя Chocolatey
+   choco install redis-64
+   
+   # Или Docker
+   docker run -d -p 6379:6379 --name redis redis:7-alpine
+   ```
+   
+   **Linux:**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install redis-server
+   sudo systemctl start redis-server
+   ```
+   
+   **macOS:**
+   ```bash
+   brew install redis
+   brew services start redis
+   ```
+
+2. **Redis не запущен**
+   
+   **Проверка:**
+   ```bash
+   redis-cli ping
+   # Должен вернуть: PONG
+   ```
+   
+   **Запуск:**
+   ```bash
+   # Linux
+   sudo systemctl start redis-server
+   
+   # macOS
+   brew services start redis
+   
+   # Docker
+   docker start redis
+   
+   # Windows (если установлен локально)
+   redis-server
+   ```
+
+3. **Неверные параметры подключения**
+   
+   **Проверьте .env файл:**
+   ```bash
+   # Базовая конфигурация
+   REDIS_URL=redis://localhost:6379/0
+   
+   # Или отдельные параметры
+   REDIS_HOST=localhost
+   REDIS_PORT=6379
+   REDIS_PASSWORD=  # Если требуется
+   REDIS_DB=0
+   ```
+
+4. **Порт 6379 занят**
+   
+   **Проверка:**
+   ```bash
+   # Linux/macOS
+   netstat -an | grep 6379
+   
+   # Windows
+   netstat -an | findstr 6379
+   ```
+   
+   **Решение:**
+   - Остановите другое приложение на порту 6379
+   - Или измените порт Redis в конфигурации
+
+5. **Firewall блокирует подключение**
+   
+   **Решение:**
+   ```bash
+   # Linux
+   sudo ufw allow 6379
+   
+   # Windows
+   # Добавьте правило в Windows Firewall для порта 6379
+   ```
+
+**Важно:** Бот продолжит работать без Redis, используя кэш в памяти, но:
+- Производительность может быть ниже
+- Кэш не сохраняется между перезапусками
+- Расходы на API могут быть выше
+
+### Проверка состояния Redis
+
+**Команда для проверки здоровья системы:**
+```bash
+curl http://localhost:9090/health
+```
+
+**Ответ при работающем Redis:**
+```json
+{
+  "status": "healthy",
+  "redis": "connected",
+  "cache_mode": "redis"
+}
+```
+
+**Ответ при недоступном Redis:**
+```json
+{
+  "status": "healthy",
+  "redis": "disconnected",
+  "cache_mode": "fallback"
+}
+```
+
+### Предупреждения ConversationHandler
+
+**Предупреждение:** "PTBUserWarning: If 'per_message=False', 'CallbackQueryHandler' will not be tracked..."
+
+**Причина:**
+- Неправильная конфигурация ConversationHandler
+- Устаревшая версия кода
+
+**Решение:**
+
+1. **Обновите код:**
+   ```bash
+   git pull
+   ```
+
+2. **Перезапустите бота:**
+   ```bash
+   # Docker
+   docker-compose restart bot
+   
+   # Локально
+   python run.py
+   ```
+
+3. **Проверьте логи:**
+   - Предупреждение должно исчезнуть
+   - Если осталось - сообщите администратору
+
+### Проблемы с производительностью
+
+**Симптомы:**
+- Медленные ответы бота
+- Задержки при генерации контента
+- Высокие расходы на API
+
+**Решения:**
+
+1. **Установите и настройте Redis**
+   - См. раздел "Проблемы с Redis" выше
+   - Redis значительно ускоряет работу
+
+2. **Проверьте кэширование:**
+   ```bash
+   # В .env файле
+   LLM_CACHE_ENABLED=true
+   LLM_CACHE_TTL=3600
+   ```
+
+3. **Увеличьте размер кэша:**
+   ```bash
+   LLM_CACHE_MAX_SIZE=5000
+   ```
+
+4. **Проверьте использование ресурсов:**
+   ```bash
+   # Проверка здоровья
+   curl http://localhost:9090/health
+   ```
 
 ---
 

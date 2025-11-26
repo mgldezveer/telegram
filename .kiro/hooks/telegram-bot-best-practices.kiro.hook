@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "Telegram Bot API Best Practices",
+  "description": "Проверяет соблюдение best practices для Telegram Bot API: rate limiting, error handling, message formatting, keyboard design и безопасность",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "src/bot/**/*.py",
+      "src/interface/**/*.py",
+      "src/services/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Проанализируй код Telegram бота и проверь:\n\n## 1. Rate Limiting\n- Соблюдаются ли лимиты Telegram API (30 сообщений/сек)?\n- Есть ли защита от flood?\n- Используется ли throttling для массовых рассылок?\n- Обрабатываются ли ошибки 429 (Too Many Requests)?\n\n## 2. Error Handling\n- Обрабатываются ли все типы Telegram ошибок (NetworkError, TimedOut, BadRequest)?\n- Есть ли retry логика для временных сбоев?\n- Логируются ли ошибки с достаточным контекстом?\n- Показываются ли пользователю понятные сообщения об ошибках?\n\n## 3. Message Formatting\n- Правильно ли экранируются спецсимволы в HTML/Markdown?\n- Не превышает ли длина сообщения 4096 символов?\n- Используется ли parse_mode корректно?\n- Есть ли fallback для длинных сообщений?\n\n## 4. Keyboard Design\n- Не слишком ли много кнопок в клавиатуре?\n- Используются ли callback_data эффективно (лимит 64 байта)?\n- Есть ли кнопка \"Назад\" или \"Отмена\"?\n- Правильно ли обрабатываются callback queries (query.answer())?\n\n## 5. Security\n- Валидируется ли user input?\n- Проверяются ли права доступа (admin commands)?\n- Защищены ли sensitive данные?\n- Используется ли webhook secret для проверки подлинности?\n\n## 6. Performance\n- Используется ли кэширование для частых запросов?\n- Оптимальны ли database queries?\n- Есть ли pagination для больших списков?\n- Используются ли typing indicators (send_chat_action)?\n\n## 7. User Experience\n- Понятны ли сообщения пользователю?\n- Есть ли help и подсказки?\n- Используются ли эмодзи для улучшения UX?\n- Есть ли feedback на действия пользователя?\n\n## 8. Рекомендации\nПредложи конкретные улучшения с примерами кода, следуя best practices из документации python-telegram-bot."
+  }
+}
