@@ -1,5 +1,5 @@
 """
-Google Gemini LLM Provider - High quality generation
+Google Gemini LLM Provider - Free tier with generous limits
 """
 
 import logging
@@ -9,6 +9,7 @@ import asyncio
 
 try:
     import google.generativeai as genai
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -31,15 +32,15 @@ class GeminiProvider(BaseLLMProvider):
     Google Gemini LLM Provider
     
     Features:
-    - High quality generation
     - Free tier: 60 requests per minute
-    - Model: gemini-pro
+    - Models: gemini-pro, gemini-1.5-flash
     - Built-in safety settings
+    - Good for longer context
     """
     
     # Rate limits for free tier
     REQUESTS_PER_MINUTE = 60
-    REQUESTS_PER_DAY = 1500
+    REQUESTS_PER_DAY = 1500  # Conservative daily limit
     
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         """
@@ -47,24 +48,37 @@ class GeminiProvider(BaseLLMProvider):
         
         Args:
             api_key: Google API key
-            model: Model name (default: gemini-pro)
+            model: Model name (default: gemini-1.5-flash)
         """
         if not GEMINI_AVAILABLE:
             raise ImportError(
-                "Google Generative AI SDK not installed. Install with: pip install google-generativeai"
+                "Google Generative AI SDK not installed. "
+                "Install with: pip install google-generativeai"
             )
         
         super().__init__(api_key, model)
         
-        # Configure Gemini
+        # Configure API
         genai.configure(api_key=api_key)
         
-        # Initialize model
-        self.client = genai.GenerativeModel(model)
+        # Initialize model with safety settings
+        self.safety_settings = {
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        }
+        
+        self.model_instance = genai.GenerativeModel(
+            model_name=model,
+            safety_settings=self.safety_settings
+        )
         
         # Rate limiting
         self.request_count = 0
+        self.daily_count = 0
         self.last_reset = datetime.utcnow()
+        self.last_daily_reset = datetime.utcnow()
         
         logger.info(f"✅ Gemini provider initialized with model: {model}")
     
@@ -82,7 +96,7 @@ class GeminiProvider(BaseLLMProvider):
             prompt: User prompt
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0.0 - 1.0)
-            system_prompt: Optional system prompt (prepended to prompt)
+            system_prompt: Optional system prompt
             
         Returns:
             Generated text
@@ -93,13 +107,18 @@ class GeminiProvider(BaseLLMProvider):
             AuthenticationError: If API key is invalid
             ProviderTimeoutError: If request times out
         """
-        # Check rate limit
+        # Check rate limits
         if self._is_rate_limited():
             raise RateLimitError(
                 f"Gemini rate limit exceeded. Resets at {self.last_reset + timedelta(minutes=1)}"
             )
         
-        # Combine system prompt with user prompt
+        if self._is_daily_limit_reached():
+            raise RateLimitError(
+                f"Gemini daily limit reached. Resets at {self.last_daily_reset + timedelta(days=1)}"
+            )
+        
+        # Prepare full prompt
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
@@ -122,8 +141,9 @@ class GeminiProvider(BaseLLMProvider):
             # Extract text
             text = response.text
             
-            # Update rate limit counter
+            # Update rate limit counters
             self.request_count += 1
+            self.daily_count += 1
             
             logger.info(f"✅ Gemini generation successful ({len(text)} chars)")
             return text
@@ -144,6 +164,10 @@ class GeminiProvider(BaseLLMProvider):
                 logger.error("❌ Gemini authentication failed")
                 raise AuthenticationError(f"Invalid Gemini API key: {e}")
             
+            elif "safety" in error_msg or "blocked" in error_msg:
+                logger.warning("⚠️ Gemini content blocked by safety filters")
+                raise APIError(f"Content blocked by Gemini safety filters: {e}")
+            
             else:
                 logger.error(f"❌ Gemini API error: {e}")
                 raise APIError(f"Gemini API error: {e}")
@@ -154,7 +178,7 @@ class GeminiProvider(BaseLLMProvider):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: self.client.generate_content(
+            lambda: self.model_instance.generate_content(
                 prompt,
                 generation_config=generation_config
             )
@@ -169,11 +193,13 @@ class GeminiProvider(BaseLLMProvider):
         """
         try:
             # Try a minimal request
+            generation_config = genai.types.GenerationConfig(
+                max_output_tokens=5,
+                temperature=0.1,
+            )
+            
             response = await asyncio.wait_for(
-                self._make_request(
-                    "Hi",
-                    genai.types.GenerationConfig(max_output_tokens=5)
-                ),
+                self._make_request("Hi", generation_config),
                 timeout=10.0
             )
             
@@ -191,10 +217,15 @@ class GeminiProvider(BaseLLMProvider):
         Returns:
             RateLimitInfo with current limits
         """
-        # Reset counter if minute has passed
+        # Reset minute counter if minute has passed
         if datetime.utcnow() - self.last_reset > timedelta(minutes=1):
             self.request_count = 0
             self.last_reset = datetime.utcnow()
+        
+        # Reset daily counter if day has passed
+        if datetime.utcnow() - self.last_daily_reset > timedelta(days=1):
+            self.daily_count = 0
+            self.last_daily_reset = datetime.utcnow()
         
         return RateLimitInfo(
             requests_per_minute=self.REQUESTS_PER_MINUTE,
@@ -214,7 +245,7 @@ class GeminiProvider(BaseLLMProvider):
         return rate_limit.get_remaining()
     
     def _is_rate_limited(self) -> bool:
-        """Check if currently rate limited"""
+        """Check if currently rate limited (per minute)"""
         # Reset if minute passed
         if datetime.utcnow() - self.last_reset > timedelta(minutes=1):
             self.request_count = 0
@@ -223,8 +254,18 @@ class GeminiProvider(BaseLLMProvider):
         
         return self.request_count >= self.REQUESTS_PER_MINUTE
     
+    def _is_daily_limit_reached(self) -> bool:
+        """Check if daily limit is reached"""
+        # Reset if day passed
+        if datetime.utcnow() - self.last_daily_reset > timedelta(days=1):
+            self.daily_count = 0
+            self.last_daily_reset = datetime.utcnow()
+            return False
+        
+        return self.daily_count >= self.REQUESTS_PER_DAY
+    
     def __str__(self) -> str:
-        return f"GeminiProvider(model={self.model}, remaining={self.get_remaining_quota()})"
+        return f"GeminiProvider(model={self.model}, remaining={self.get_remaining_quota()}, daily={self.REQUESTS_PER_DAY - self.daily_count})"
 
 
 # Convenience function to create Gemini provider from environment
@@ -241,8 +282,8 @@ def create_gemini_provider_from_env() -> Optional[GeminiProvider]:
     load_dotenv()
     
     api_key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL", "gemini-pro")
-    enabled = os.getenv("LLM_GEMINI_ENABLED", "false").lower() == "true"
+    model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    enabled = os.getenv("LLM_GEMINI_ENABLED", "true").lower() == "true"
     
     if not api_key or not enabled:
         logger.warning("⚠️ Gemini provider not configured or disabled")

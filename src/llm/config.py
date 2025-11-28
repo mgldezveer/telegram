@@ -1,11 +1,10 @@
 """
-LLM Configuration Management
-Загрузка и валидация настроек для LLM провайдеров
+LLM Configuration - Centralized configuration management
 """
 
-import os
 import logging
-from typing import Dict, List, Optional
+import os
+from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
@@ -14,236 +13,262 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ProviderConfig:
-    """Конфигурация для одного провайдера"""
+    """Configuration for a single LLM provider"""
     name: str
     enabled: bool
     api_key: Optional[str]
-    model: Optional[str]
-    priority: int = 0
+    model: str
+    priority: int = 0  # Lower number = higher priority
     
-    def is_valid(self) -> bool:
-        """Проверка валидности конфигурации"""
-        if not self.enabled:
-            return True  # Отключенный провайдер валиден
-        
-        if not self.api_key:
-            logger.warning(f"⚠️ Provider {self.name}: API key not configured")
-            return False
-        
-        return True
+    def is_configured(self) -> bool:
+        """Check if provider is properly configured"""
+        # HuggingFace doesn't require API key
+        if self.name == "huggingface":
+            return self.enabled
+        return self.enabled and bool(self.api_key)
+
+
+@dataclass
+class CacheConfig:
+    """Cache configuration"""
+    enabled: bool = True
+    use_redis: bool = True
+    redis_url: str = "redis://localhost:6379/0"
+    ttl_seconds: int = 3600
+    max_memory_size: int = 1000
+
+
+@dataclass
+class RateLimitConfig:
+    """Rate limiting configuration"""
+    enabled: bool = True
+    use_redis: bool = True
+    redis_url: str = "redis://localhost:6379/0"
 
 
 @dataclass
 class LLMConfig:
     """
-    Конфигурация LLM системы
+    Complete LLM system configuration.
     
-    Загружает настройки из переменных окружения и валидирует их.
+    Loads configuration from environment variables with validation.
     """
+    # Providers
+    groq: ProviderConfig
+    gemini: ProviderConfig
+    huggingface: ProviderConfig
     
-    # Провайдеры
-    providers: Dict[str, ProviderConfig] = field(default_factory=dict)
+    # Services
+    cache: CacheConfig
+    rate_limit: RateLimitConfig
     
-    # Общие настройки
-    default_provider: Optional[str] = None
-    fallback_enabled: bool = True
-    cache_enabled: bool = True
-    rate_limit_enabled: bool = True
-    
-    # Настройки кэша
-    cache_ttl: int = 3600  # 1 час
-    cache_max_size: int = 1000
-    
-    # Настройки retry
+    # General settings
     max_retries: int = 3
-    retry_delay: float = 1.0
-    
-    # Таймауты
-    request_timeout: int = 30
+    default_max_tokens: int = 1000
+    default_temperature: float = 0.7
     
     @classmethod
     def from_env(cls) -> 'LLMConfig':
         """
-        Загрузка конфигурации из переменных окружения.
+        Load configuration from environment variables.
         
         Returns:
-            LLMConfig с загруженными настройками
+            LLMConfig instance
         """
         load_dotenv()
         
-        config = cls()
+        # Groq configuration
+        groq = ProviderConfig(
+            name="groq",
+            enabled=os.getenv("LLM_GROQ_ENABLED", "true").lower() == "true",
+            api_key=os.getenv("GROQ_API_KEY"),
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            priority=int(os.getenv("LLM_GROQ_PRIORITY", "1"))
+        )
         
-        # Загрузка провайдеров
-        config._load_providers()
+        # Gemini configuration
+        gemini = ProviderConfig(
+            name="gemini",
+            enabled=os.getenv("LLM_GEMINI_ENABLED", "true").lower() == "true",
+            api_key=os.getenv("GEMINI_API_KEY"),
+            model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            priority=int(os.getenv("LLM_GEMINI_PRIORITY", "2"))
+        )
         
-        # Загрузка общих настроек
-        config.default_provider = os.getenv('LLM_DEFAULT_PROVIDER', 'groq')
-        config.fallback_enabled = os.getenv('LLM_FALLBACK_ENABLED', 'true').lower() == 'true'
-        config.cache_enabled = os.getenv('LLM_CACHE_ENABLED', 'true').lower() == 'true'
-        config.rate_limit_enabled = os.getenv('LLM_RATE_LIMIT_ENABLED', 'true').lower() == 'true'
+        # HuggingFace configuration
+        huggingface = ProviderConfig(
+            name="huggingface",
+            enabled=os.getenv("LLM_HUGGINGFACE_ENABLED", "true").lower() == "true",
+            api_key=os.getenv("HUGGINGFACE_API_KEY"),  # Optional
+            model=os.getenv("HUGGINGFACE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1"),
+            priority=int(os.getenv("LLM_HUGGINGFACE_PRIORITY", "3"))
+        )
         
-        # Настройки кэша
-        config.cache_ttl = int(os.getenv('LLM_CACHE_TTL', '3600'))
-        config.cache_max_size = int(os.getenv('LLM_CACHE_MAX_SIZE', '1000'))
+        # Cache configuration
+        cache = CacheConfig(
+            enabled=os.getenv("LLM_ENABLE_CACHE", "true").lower() == "true",
+            use_redis=os.getenv("LLM_USE_REDIS", "true").lower() == "true",
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            ttl_seconds=int(os.getenv("LLM_CACHE_TTL", "3600")),
+            max_memory_size=int(os.getenv("LLM_CACHE_MAX_SIZE", "1000"))
+        )
         
-        # Настройки retry
-        config.max_retries = int(os.getenv('LLM_MAX_RETRIES', '3'))
-        config.retry_delay = float(os.getenv('LLM_RETRY_DELAY', '1.0'))
+        # Rate limit configuration
+        rate_limit = RateLimitConfig(
+            enabled=os.getenv("LLM_RATE_LIMIT_ENABLED", "true").lower() == "true",
+            use_redis=os.getenv("LLM_USE_REDIS", "true").lower() == "true",
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        )
         
-        # Таймауты
-        config.request_timeout = int(os.getenv('LLM_REQUEST_TIMEOUT', '30'))
+        # General settings
+        max_retries = int(os.getenv("LLM_MAX_RETRIES", "3"))
+        default_max_tokens = int(os.getenv("LLM_DEFAULT_MAX_TOKENS", "1000"))
+        default_temperature = float(os.getenv("LLM_DEFAULT_TEMPERATURE", "0.7"))
         
-        logger.info("✅ LLM configuration loaded from environment")
-        return config
+        return cls(
+            groq=groq,
+            gemini=gemini,
+            huggingface=huggingface,
+            cache=cache,
+            rate_limit=rate_limit,
+            max_retries=max_retries,
+            default_max_tokens=default_max_tokens,
+            default_temperature=default_temperature
+        )
     
-    def _load_providers(self):
-        """Загрузка конфигурации провайдеров"""
-        
-        # Groq
-        self.providers['groq'] = ProviderConfig(
-            name='groq',
-            enabled=os.getenv('LLM_GROQ_ENABLED', 'true').lower() == 'true',
-            api_key=os.getenv('GROQ_API_KEY'),
-            model=os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile'),
-            priority=int(os.getenv('LLM_GROQ_PRIORITY', '1'))
-        )
-        
-        # Gemini
-        self.providers['gemini'] = ProviderConfig(
-            name='gemini',
-            enabled=os.getenv('LLM_GEMINI_ENABLED', 'false').lower() == 'true',
-            api_key=os.getenv('GEMINI_API_KEY'),
-            model=os.getenv('GEMINI_MODEL', 'gemini-1.5-flash'),
-            priority=int(os.getenv('LLM_GEMINI_PRIORITY', '2'))
-        )
-        
-        # Hugging Face
-        self.providers['huggingface'] = ProviderConfig(
-            name='huggingface',
-            enabled=os.getenv('LLM_HF_ENABLED', 'false').lower() == 'true',
-            api_key=os.getenv('HF_API_KEY'),
-            model=os.getenv('HF_MODEL'),  # None = использовать список по умолчанию
-            priority=int(os.getenv('LLM_HF_PRIORITY', '3'))
-        )
-    
-    def validate(self) -> bool:
+    def get_enabled_providers(self) -> List[ProviderConfig]:
         """
-        Валидация конфигурации.
+        Get list of enabled and configured providers in priority order.
         
         Returns:
-            True если конфигурация валидна
+            List of ProviderConfig sorted by priority
         """
-        # Проверка наличия хотя бы одного включенного провайдера
-        enabled_providers = [p for p in self.providers.values() if p.enabled]
+        providers = [self.groq, self.gemini, self.huggingface]
+        enabled = [p for p in providers if p.is_configured()]
+        return sorted(enabled, key=lambda p: p.priority)
+    
+    def validate(self) -> Dict[str, List[str]]:
+        """
+        Validate configuration and return any issues.
         
+        Returns:
+            Dictionary mapping provider names to list of issues
+        """
+        issues = {}
+        
+        # Check if at least one provider is configured
+        enabled_providers = self.get_enabled_providers()
         if not enabled_providers:
-            logger.error("❌ No LLM providers enabled!")
-            return False
+            issues['general'] = ["No LLM providers are configured. Please set at least one API key."]
         
-        # Валидация каждого провайдера
-        valid_providers = []
-        for provider in enabled_providers:
-            if provider.is_valid():
-                valid_providers.append(provider.name)
-            else:
-                logger.warning(f"⚠️ Provider {provider.name} is enabled but not valid")
-        
-        if not valid_providers:
-            logger.error("❌ No valid LLM providers configured!")
-            return False
-        
-        logger.info(f"✅ Valid providers: {', '.join(valid_providers)}")
-        
-        # Проверка default provider
-        if self.default_provider and self.default_provider not in valid_providers:
-            logger.warning(
-                f"⚠️ Default provider '{self.default_provider}' is not valid, "
-                f"using first available: {valid_providers[0]}"
-            )
-            self.default_provider = valid_providers[0]
-        
-        return True
-    
-    def get_enabled_providers(self) -> List[str]:
-        """
-        Получение списка включенных и валидных провайдеров.
-        
-        Returns:
-            Список имен провайдеров
-        """
-        return [
-            name for name, config in self.providers.items()
-            if config.enabled and config.is_valid()
-        ]
-    
-    def get_provider_priority_order(self) -> List[str]:
-        """
-        Получение провайдеров в порядке приоритета.
-        
-        Returns:
-            Список имен провайдеров, отсортированных по приоритету
-        """
-        enabled = [
-            (name, config) for name, config in self.providers.items()
-            if config.enabled and config.is_valid()
-        ]
-        
-        # Сортировка по приоритету (меньше = выше приоритет)
-        sorted_providers = sorted(enabled, key=lambda x: x[1].priority)
-        
-        return [name for name, _ in sorted_providers]
-    
-    def get_provider_config(self, provider_name: str) -> Optional[ProviderConfig]:
-        """
-        Получение конфигурации провайдера.
-        
-        Args:
-            provider_name: Имя провайдера
+        # Validate individual providers
+        for provider in [self.groq, self.gemini, self.huggingface]:
+            provider_issues = []
             
-        Returns:
-            ProviderConfig или None
+            if provider.enabled and not provider.is_configured():
+                if provider.name != "huggingface":
+                    provider_issues.append(f"Provider enabled but API key not set")
+            
+            if provider.priority < 0:
+                provider_issues.append(f"Invalid priority: {provider.priority}")
+            
+            if provider_issues:
+                issues[provider.name] = provider_issues
+        
+        # Validate cache settings
+        if self.cache.enabled and self.cache.use_redis:
+            if not self.cache.redis_url:
+                issues['cache'] = ["Redis enabled but URL not set"]
+        
+        # Validate rate limit settings
+        if self.rate_limit.enabled and self.rate_limit.use_redis:
+            if not self.rate_limit.redis_url:
+                issues['rate_limit'] = ["Redis enabled but URL not set"]
+        
+        return issues
+    
+    def get_status_summary(self) -> str:
         """
-        return self.providers.get(provider_name)
+        Get human-readable status summary.
+        
+        Returns:
+            Formatted status string
+        """
+        lines = ["LLM Configuration Status:"]
+        lines.append("")
+        
+        # Providers
+        lines.append("Providers:")
+        for provider in [self.groq, self.gemini, self.huggingface]:
+            status = "✅ Configured" if provider.is_configured() else "❌ Not configured"
+            priority = f"(Priority: {provider.priority})" if provider.is_configured() else ""
+            lines.append(f"  {provider.name.capitalize()}: {status} {priority}")
+        
+        lines.append("")
+        
+        # Services
+        lines.append("Services:")
+        cache_status = "✅ Enabled" if self.cache.enabled else "❌ Disabled"
+        cache_backend = f"(Redis)" if self.cache.use_redis else "(Memory)"
+        lines.append(f"  Cache: {cache_status} {cache_backend}")
+        
+        rate_limit_status = "✅ Enabled" if self.rate_limit.enabled else "❌ Disabled"
+        rate_limit_backend = f"(Redis)" if self.rate_limit.use_redis else "(Memory)"
+        lines.append(f"  Rate Limiting: {rate_limit_status} {rate_limit_backend}")
+        
+        lines.append("")
+        
+        # Settings
+        lines.append("Settings:")
+        lines.append(f"  Max Retries: {self.max_retries}")
+        lines.append(f"  Default Max Tokens: {self.default_max_tokens}")
+        lines.append(f"  Default Temperature: {self.default_temperature}")
+        
+        # Validation
+        issues = self.validate()
+        if issues:
+            lines.append("")
+            lines.append("⚠️ Configuration Issues:")
+            for component, component_issues in issues.items():
+                for issue in component_issues:
+                    lines.append(f"  - {component}: {issue}")
+        
+        return "\n".join(lines)
     
     def __str__(self) -> str:
-        enabled = self.get_enabled_providers()
-        return (
-            f"LLMConfig(providers={len(enabled)}, "
-            f"default={self.default_provider}, "
-            f"cache={self.cache_enabled}, "
-            f"fallback={self.fallback_enabled})"
-        )
+        enabled_count = len(self.get_enabled_providers())
+        return f"LLMConfig(providers={enabled_count}, cache={'On' if self.cache.enabled else 'Off'}, rate_limit={'On' if self.rate_limit.enabled else 'Off'})"
 
 
-# Глобальный экземпляр конфигурации
+# Global configuration instance
 _config: Optional[LLMConfig] = None
 
 
 def get_config() -> LLMConfig:
     """
-    Получение глобального экземпляра конфигурации.
+    Get global LLM configuration instance.
     
     Returns:
-        LLMConfig
+        LLMConfig instance
     """
     global _config
-    
     if _config is None:
         _config = LLMConfig.from_env()
+        logger.info("✅ LLM configuration loaded")
         
-        if not _config.validate():
-            raise ValueError("Invalid LLM configuration")
+        # Log validation issues
+        issues = _config.validate()
+        if issues:
+            logger.warning("⚠️ Configuration validation issues found:")
+            for component, component_issues in issues.items():
+                for issue in component_issues:
+                    logger.warning(f"  - {component}: {issue}")
     
     return _config
 
 
-def reload_config() -> LLMConfig:
-    """
-    Перезагрузка конфигурации из окружения.
-    
-    Returns:
-        Новый LLMConfig
-    """
+def reload_config():
+    """Reload configuration from environment"""
     global _config
     _config = None
     return get_config()

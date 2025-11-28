@@ -1,316 +1,347 @@
 """
-Hugging Face Provider для LLM интеграции.
-Использует Hugging Face Inference API с бесплатными моделями.
+Hugging Face LLM Provider - Free inference API with fallback models
 """
 
-import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, List
 from datetime import datetime, timedelta
+import asyncio
 
-from huggingface_hub import InferenceClient
-from huggingface_hub.utils import HfHubHTTPError
+try:
+    from huggingface_hub import AsyncInferenceClient
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+    AsyncInferenceClient = None
 
-from ..base_provider import BaseLLMProvider
-from ..models import LLMResponse, ProviderStatus, RateLimitInfo
+from ..base_provider import (
+    BaseLLMProvider,
+    APIError,
+    RateLimitError,
+    AuthenticationError,
+    TimeoutError as ProviderTimeoutError
+)
+from ..models import RateLimitInfo
 
 logger = logging.getLogger(__name__)
 
 
 class HuggingFaceProvider(BaseLLMProvider):
     """
-    Hugging Face Provider с поддержкой бесплатных моделей.
+    Hugging Face LLM Provider
     
-    Особенности:
-    - Использует бесплатный Inference API
-    - Поддержка нескольких моделей с fallback
-    - Обработка медленных ответов
-    - Автоматическое переключение моделей при недоступности
+    Features:
+    - Free inference API
+    - Multiple model fallback
+    - Models: Mixtral, Llama, Mistral
+    - Can be slower than other providers
     """
     
-    # Список моделей в порядке приоритета
-    MODELS = [
-        "mistralai/Mixtral-8x7B-Instruct-v0.1",  # Основная модель
-        "mistralai/Mistral-7B-Instruct-v0.2",    # Fallback 1
-        "meta-llama/Llama-2-7b-chat-hf",         # Fallback 2
+    # Rate limits (conservative estimates for free tier)
+    REQUESTS_PER_MINUTE = 30
+    REQUESTS_PER_DAY = 1000
+    
+    # Default models in priority order
+    DEFAULT_MODELS = [
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "mistralai/Mistral-7B-Instruct-v0.2",
+        "meta-llama/Llama-2-70b-chat-hf",
     ]
     
-    def __init__(self, api_key: str, model: str = None, timeout: int = 60):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        fallback_models: Optional[List[str]] = None
+    ):
         """
-        Инициализация Hugging Face Provider.
+        Initialize Hugging Face provider.
         
         Args:
-            api_key: Hugging Face API токен
-            model: Название модели (опционально, используется первая из списка)
-            timeout: Таймаут запроса в секундах (по умолчанию 60)
+            api_key: HF API token (optional, but recommended)
+            model: Primary model name
+            fallback_models: List of fallback models if primary fails
         """
-        # Используем первую модель из списка если не указана
-        if model is None:
-            model = self.MODELS[0]
+        if not HF_AVAILABLE:
+            raise ImportError(
+                "Hugging Face Hub not installed. "
+                "Install with: pip install huggingface-hub"
+            )
         
-        super().__init__(api_key, model)
-        self.timeout = timeout
-        self.client = InferenceClient(token=api_key)
-        self.current_model_index = 0
-        self.model_failures: Dict[str, int] = {model: 0 for model in self.MODELS}
-        self.last_request_time: Optional[datetime] = None
-        self.total_requests = 0
-        self.successful_requests = 0
-        self.failed_requests = 0
+        super().__init__(api_key or "", model)
         
-        # Rate limiting для бесплатного tier
-        self.rate_limit = RateLimitInfo(
-            requests_per_minute=10,
-            requests_per_day=1000,
-            current_usage=0,
-            reset_at=datetime.now() + timedelta(days=1)
-        )
-        self.remaining_requests = 1000
+        # Initialize client
+        self.client = AsyncInferenceClient(token=api_key)
         
-        logger.info(f"HuggingFace Provider initialized with {len(self.MODELS)} models")
+        # Setup fallback models
+        self.fallback_models = fallback_models or self.DEFAULT_MODELS.copy()
+        if model not in self.fallback_models:
+            self.fallback_models.insert(0, model)
+        
+        # Rate limiting
+        self.request_count = 0
+        self.daily_count = 0
+        self.last_reset = datetime.utcnow()
+        self.last_daily_reset = datetime.utcnow()
+        
+        # Track model availability
+        self.unavailable_models = set()
+        self.last_availability_check = {}
+        
+        logger.info(f"✅ HuggingFace provider initialized with model: {model}")
+        logger.info(f"   Fallback models: {', '.join(self.fallback_models[1:])}")
     
     async def generate(
         self,
         prompt: str,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        system_prompt: Optional[str] = None,
-        **kwargs
+        system_prompt: Optional[str] = None
     ) -> str:
         """
-        Генерация текста с использованием Hugging Face моделей.
+        Generate text using Hugging Face API with fallback.
         
         Args:
-            prompt: Пользовательский промпт
-            max_tokens: Максимальное количество токенов
-            temperature: Температура генерации (0.0-1.0)
-            system_prompt: Системный промпт (опционально)
-            **kwargs: Дополнительные параметры
+            prompt: User prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0.0 - 1.0)
+            system_prompt: Optional system prompt
             
         Returns:
-            Сгенерированный текст
+            Generated text
             
         Raises:
-            Exception: При ошибке генерации после всех попыток
+            APIError: If all models fail
+            RateLimitError: If rate limit is exceeded
+            AuthenticationError: If API key is invalid
+            ProviderTimeoutError: If request times out
         """
-        start_time = datetime.now()
-        self.total_requests += 1
+        # Check rate limits
+        if self._is_rate_limited():
+            raise RateLimitError(
+                f"HuggingFace rate limit exceeded. Resets at {self.last_reset + timedelta(minutes=1)}"
+            )
         
-        # Проверка rate limit
-        if not self._check_rate_limit():
-            self.failed_requests += 1
-            raise Exception("Rate limit exceeded for Hugging Face API")
+        if self._is_daily_limit_reached():
+            raise RateLimitError(
+                f"HuggingFace daily limit reached. Resets at {self.last_daily_reset + timedelta(days=1)}"
+            )
         
-        # Формирование сообщений
-        messages = []
+        # Prepare full prompt
+        full_prompt = prompt
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+            full_prompt = f"<s>[INST] {system_prompt}\n\n{prompt} [/INST]"
+        else:
+            full_prompt = f"<s>[INST] {prompt} [/INST]"
         
-        # Попытка генерации с fallback между моделями
+        # Try each model in fallback chain
         last_error = None
-        for attempt in range(len(self.MODELS)):
-            model = self._get_next_available_model()
-            
+        for model_name in self._get_available_models():
             try:
-                logger.info(f"Attempting generation with model: {model}")
+                logger.debug(f"Trying HuggingFace model: {model_name}")
                 
-                # Генерация с таймаутом
+                # Make async request with timeout
                 response = await asyncio.wait_for(
-                    self._generate_with_model(model, messages, max_tokens, temperature),
-                    timeout=self.timeout
+                    self._make_request(model_name, full_prompt, max_tokens, temperature),
+                    timeout=60.0  # HF can be slower
                 )
                 
-                # Успешная генерация - сброс счетчика ошибок
-                self.model_failures[model] = 0
-                self.successful_requests += 1
+                # Extract text
+                text = response.strip()
                 
-                # Обновление rate limit
-                self._update_rate_limit()
+                # Update rate limit counters
+                self.request_count += 1
+                self.daily_count += 1
                 
-                return response
+                logger.info(f"✅ HuggingFace generation successful with {model_name} ({len(text)} chars)")
+                return text
                 
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout for model {model}, trying next model")
-                self.model_failures[model] += 1
-                last_error = f"Timeout after {self.timeout}s"
+                logger.warning(f"⚠️ HuggingFace model {model_name} timed out")
+                self._mark_model_unavailable(model_name, duration_minutes=5)
+                last_error = ProviderTimeoutError(f"Model {model_name} timed out")
+                continue
                 
-            except HfHubHTTPError as e:
-                logger.warning(f"HTTP error for model {model}: {e}")
-                self.model_failures[model] += 1
-                last_error = str(e)
-                
-                # Если модель недоступна (503), сразу переключаемся
-                if "503" in str(e):
-                    continue
-                    
             except Exception as e:
-                logger.error(f"Error with model {model}: {e}")
-                self.model_failures[model] += 1
-                last_error = str(e)
-        
-        # Все модели не сработали
-        self.failed_requests += 1
-        raise Exception(f"All Hugging Face models failed. Last error: {last_error}")
-    
-    async def _generate_with_model(
-        self,
-        model: str,
-        messages: list,
-        max_tokens: int,
-        temperature: float
-    ) -> str:
-        """
-        Генерация с конкретной моделью.
-        
-        Args:
-            model: Название модели
-            messages: Список сообщений
-            max_tokens: Максимальное количество токенов
-            temperature: Температура генерации
-            
-        Returns:
-            Сгенерированный текст
-        """
-        # Формирование промпта для модели
-        prompt = self._format_prompt(messages)
-        
-        # Вызов API в отдельном потоке (т.к. библиотека синхронная)
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.client.text_generation(
-                prompt,
-                model=model,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                return_full_text=False
-            )
-        )
-        
-        return response.strip()
-    
-    def _format_prompt(self, messages: list) -> str:
-        """
-        Форматирование промпта для Hugging Face моделей.
-        
-        Args:
-            messages: Список сообщений
-            
-        Returns:
-            Отформатированный промпт
-        """
-        formatted = ""
-        
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            
-            if role == "system":
-                formatted += f"<s>[INST] <<SYS>>\n{content}\n<</SYS>>\n\n"
-            elif role == "user":
-                if formatted and not formatted.endswith("[INST] "):
-                    formatted += f"[INST] {content} [/INST]"
+                error_msg = str(e).lower()
+                
+                # Check for specific error types
+                if "rate limit" in error_msg or "429" in error_msg:
+                    logger.warning("⚠️ HuggingFace rate limit hit")
+                    raise RateLimitError(f"HuggingFace rate limit exceeded: {e}")
+                
+                elif "unauthorized" in error_msg or "401" in error_msg or "403" in error_msg:
+                    logger.error("❌ HuggingFace authentication failed")
+                    raise AuthenticationError(f"Invalid HuggingFace API key: {e}")
+                
+                elif "model" in error_msg and ("not found" in error_msg or "unavailable" in error_msg):
+                    logger.warning(f"⚠️ HuggingFace model {model_name} unavailable: {e}")
+                    self._mark_model_unavailable(model_name, duration_minutes=10)
+                    last_error = APIError(f"Model {model_name} unavailable: {e}")
+                    continue
+                
                 else:
-                    formatted += f"{content} [/INST]"
-            elif role == "assistant":
-                formatted += f"{content}</s><s>"
+                    logger.warning(f"⚠️ HuggingFace error with {model_name}: {e}")
+                    last_error = APIError(f"HuggingFace error: {e}")
+                    continue
         
-        return formatted
+        # All models failed
+        logger.error("❌ All HuggingFace models failed")
+        if last_error:
+            raise last_error
+        else:
+            raise APIError("All HuggingFace models failed")
     
-    def _get_next_available_model(self) -> str:
-        """
-        Получение следующей доступной модели.
-        
-        Returns:
-            Название модели
-        """
-        # Сортировка моделей по количеству ошибок
-        sorted_models = sorted(
-            self.MODELS,
-            key=lambda m: self.model_failures[m]
+    async def _make_request(self, model_name, prompt, max_tokens, temperature):
+        """Make async request to Hugging Face API"""
+        return await self.client.text_generation(
+            prompt,
+            model=model_name,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            return_full_text=False
         )
-        
-        return sorted_models[0]
     
-    def _check_rate_limit(self) -> bool:
-        """
-        Проверка rate limit.
+    def _get_available_models(self) -> List[str]:
+        """Get list of currently available models"""
+        now = datetime.utcnow()
+        available = []
         
-        Returns:
-            True если можно делать запрос
-        """
-        now = datetime.now()
-        
-        # Сброс счетчика если прошел день
-        if now > self.rate_limit.reset_at:
-            self.remaining_requests = self.rate_limit.requests_per_day
-            self.rate_limit.reset_at = now + timedelta(days=1)
-            self.rate_limit.current_usage = 0
-        
-        # Проверка минутного лимита
-        if self.last_request_time:
-            time_since_last = (now - self.last_request_time).total_seconds()
-            if time_since_last < 6:  # 10 запросов в минуту = 1 запрос в 6 секунд
-                return False
-        
-        return self.remaining_requests > 0
-    
-    def _update_rate_limit(self):
-        """Обновление информации о rate limit."""
-        self.remaining_requests -= 1
-        self.rate_limit.current_usage += 1
-        self.last_request_time = datetime.now()
-    
-    def _estimate_tokens(self, prompt: str, response: str) -> int:
-        """
-        Оценка количества использованных токенов.
-        
-        Args:
-            prompt: Промпт
-            response: Ответ
+        for model in self.fallback_models:
+            # Check if model is marked unavailable
+            if model in self.unavailable_models:
+                # Check if cooldown period has passed
+                last_check = self.last_availability_check.get(model)
+                if last_check and (now - last_check).total_seconds() < 300:  # 5 min cooldown
+                    continue
+                else:
+                    # Remove from unavailable set to retry
+                    self.unavailable_models.discard(model)
             
-        Returns:
-            Примерное количество токенов
-        """
-        # Грубая оценка: ~4 символа = 1 токен
-        total_chars = len(prompt) + len(response)
-        return total_chars // 4
+            available.append(model)
+        
+        return available if available else self.fallback_models
+    
+    def _mark_model_unavailable(self, model_name: str, duration_minutes: int = 5):
+        """Mark a model as temporarily unavailable"""
+        self.unavailable_models.add(model_name)
+        self.last_availability_check[model_name] = datetime.utcnow()
+        logger.info(f"Marked {model_name} as unavailable for {duration_minutes} minutes")
     
     async def check_availability(self) -> bool:
         """
-        Проверка доступности провайдера.
+        Check if Hugging Face API is available.
         
         Returns:
-            True если провайдер доступен
+            True if at least one model is available, False otherwise
         """
-        try:
-            # Пробуем простой запрос
-            test_response = await self.generate(
-                prompt="Say 'OK'",
-                max_tokens=10,
-                temperature=0.1
-            )
-            return True
-            
-        except Exception as e:
-            logger.error(f"Hugging Face availability check failed: {e}")
-            return False
+        for model_name in self.fallback_models[:2]:  # Check first 2 models
+            try:
+                # Try a minimal request
+                response = await asyncio.wait_for(
+                    self._make_request(
+                        model_name,
+                        "<s>[INST] Hi [/INST]",
+                        max_tokens=5,
+                        temperature=0.1
+                    ),
+                    timeout=15.0
+                )
+                
+                logger.info(f"✅ HuggingFace API is available (model: {model_name})")
+                return True
+                
+            except Exception as e:
+                logger.debug(f"Model {model_name} check failed: {e}")
+                continue
+        
+        logger.warning("⚠️ HuggingFace API unavailable (all models failed)")
+        return False
     
     def get_rate_limit_info(self) -> RateLimitInfo:
         """
-        Получение информации о rate limit.
+        Get rate limit information.
         
         Returns:
-            RateLimitInfo с текущими лимитами
+            RateLimitInfo with current limits
         """
-        return self.rate_limit
+        # Reset minute counter if minute has passed
+        if datetime.utcnow() - self.last_reset > timedelta(minutes=1):
+            self.request_count = 0
+            self.last_reset = datetime.utcnow()
+        
+        # Reset daily counter if day has passed
+        if datetime.utcnow() - self.last_daily_reset > timedelta(days=1):
+            self.daily_count = 0
+            self.last_daily_reset = datetime.utcnow()
+        
+        return RateLimitInfo(
+            requests_per_minute=self.REQUESTS_PER_MINUTE,
+            requests_per_day=self.REQUESTS_PER_DAY,
+            current_usage=self.request_count,
+            reset_at=self.last_reset + timedelta(minutes=1)
+        )
     
     def get_remaining_quota(self) -> int:
         """
-        Получение оставшейся квоты запросов.
+        Get remaining requests before rate limit.
         
         Returns:
-            Количество оставшихся запросов
+            Number of remaining requests
         """
-        return self.remaining_requests
+        rate_limit = self.get_rate_limit_info()
+        return rate_limit.get_remaining()
+    
+    def _is_rate_limited(self) -> bool:
+        """Check if currently rate limited (per minute)"""
+        # Reset if minute passed
+        if datetime.utcnow() - self.last_reset > timedelta(minutes=1):
+            self.request_count = 0
+            self.last_reset = datetime.utcnow()
+            return False
+        
+        return self.request_count >= self.REQUESTS_PER_MINUTE
+    
+    def _is_daily_limit_reached(self) -> bool:
+        """Check if daily limit is reached"""
+        # Reset if day passed
+        if datetime.utcnow() - self.last_daily_reset > timedelta(days=1):
+            self.daily_count = 0
+            self.last_daily_reset = datetime.utcnow()
+            return False
+        
+        return self.daily_count >= self.REQUESTS_PER_DAY
+    
+    def __str__(self) -> str:
+        available_count = len(self._get_available_models())
+        return f"HuggingFaceProvider(model={self.model}, available_models={available_count}/{len(self.fallback_models)}, remaining={self.get_remaining_quota()})"
+
+
+# Convenience function to create HuggingFace provider from environment
+def create_huggingface_provider_from_env() -> Optional[HuggingFaceProvider]:
+    """
+    Create HuggingFace provider from environment variables.
+    
+    Returns:
+        HuggingFaceProvider instance or None if disabled
+    """
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    api_key = os.getenv("HUGGINGFACE_API_KEY")  # Optional
+    model = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
+    enabled = os.getenv("LLM_HUGGINGFACE_ENABLED", "true").lower() == "true"
+    
+    if not enabled:
+        logger.warning("⚠️ HuggingFace provider disabled")
+        return None
+    
+    try:
+        provider = HuggingFaceProvider(api_key=api_key, model=model)
+        logger.info("✅ HuggingFace provider created from environment")
+        return provider
+    except Exception as e:
+        logger.error(f"❌ Failed to create HuggingFace provider: {e}")
+        return None

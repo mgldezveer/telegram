@@ -9,17 +9,27 @@ from src.models.base import Base
 
 
 class PostStatus(str, Enum):
-    """Post status enumeration."""
+    """Unified post status enumeration."""
     DRAFT = "draft"
     VALIDATED = "validated"
+    QUEUED = "queued"
+    APPROVED = "approved"
     SCHEDULED = "scheduled"
     PUBLISHED = "published"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     ARCHIVED = "archived"
+    RETRYING = "retrying"
+
+
+class PostType(str, Enum):
+    """Post type enumeration."""
+    MANUAL = "manual"
+    AUTOMATED = "automated"
 
 
 class Post(Base):
-    """Post model."""
+    """Unified post model supporting both manual and auto-posting."""
     __tablename__ = "posts"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -33,18 +43,38 @@ class Post(Base):
         default=PostStatus.DRAFT,
         nullable=False
     )
+    post_type: Mapped[PostType] = mapped_column(
+        SQLEnum(PostType),
+        default=PostType.MANUAL,
+        nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     scheduled_for: Mapped[Optional[datetime]] = mapped_column(DateTime)
     
-    # Metadata
+    # Metadata for auto-posting
+    autopost_id: Mapped[Optional[str]] = mapped_column(String(36))  # For linking to original autopost
+    autopost_priority: Mapped[int] = mapped_column(Integer, default=0)
+    autopost_source: Mapped[Optional[str]] = mapped_column(String(100))  # For content source
+    
+    # Media and formatting stored as JSON
+    media_data: Mapped[list] = mapped_column(JSON, default=list)  # Extended media support
+    buttons: Mapped[list] = mapped_column(JSON, default=list)  # Interactive buttons
     style_tone: Mapped[Optional[str]] = mapped_column(String(50))
     style_length: Mapped[Optional[str]] = mapped_column(String(50))
     theme: Mapped[Optional[str]] = mapped_column(String(100))
     
+    # Error information for failed posts
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    
+    # Telegram message ID (if published successfully)
+    telegram_message_id: Mapped[Optional[int]] = mapped_column(Integer)
+    
     # Relationships
     channel: Mapped["Channel"] = relationship("Channel", back_populates="posts")
     metrics: Mapped[Optional["Metrics"]] = relationship("Metrics", back_populates="post", uselist=False)
+    autopost_publications: Mapped[list["AutoPostPublication"]] = relationship("AutoPostPublication", back_populates="post")
     
     def __repr__(self) -> str:
-        return f"<Post(id={self.id}, channel_id={self.channel_id}, status={self.status})>"
+        return f"<Post(id={self.id}, channel_id={self.channel_id}, status={self.status}, type={self.post_type})>"

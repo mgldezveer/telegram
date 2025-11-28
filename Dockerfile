@@ -1,4 +1,4 @@
-# Multi-stage build for AI Content Bot
+# Multi-stage build for Telegram Bot
 
 # Build stage
 FROM python:3.11-slim as builder
@@ -31,8 +31,18 @@ COPY --from=builder /root/.local /root/.local
 
 # Copy application code
 COPY src/ ./src/
+COPY run.py .
+COPY run_autopost.py .
+COPY init_db.py .
+COPY init_autopost_db.py .
+COPY check_db.py .
+COPY check_setup.py .
+COPY check_tasks.py .
+COPY clean_channels.py .
+COPY sync_channel_stats.py .
 COPY alembic.ini .
 COPY .env.example .env
+COPY settings.json .
 
 # Set Python path
 ENV PATH=/root/.local/bin:$PATH
@@ -45,4 +55,4 @@ RUN mkdir -p logs
 EXPOSE 9090
 
 # Run bot
-CMD ["python", "-m", "src.main"]
+CMD ["python", "run.py"]

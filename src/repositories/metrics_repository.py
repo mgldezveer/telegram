@@ -1,6 +1,7 @@
 """Metrics repository."""
 
-from typing import Optional
+from typing import Optional, List
+from datetime import datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.models import Metrics
@@ -32,3 +33,21 @@ class MetricsRepository:
             update(Metrics).where(Metrics.post_id == post_id).values(**kwargs)
         )
         await self.session.commit()
+    
+    async def get_by_channel(self, channel_id: int) -> List[Metrics]:
+        """Get metrics for all posts in a channel."""
+        result = await self.session.execute(
+            select(Metrics)
+            .join(Metrics.post)
+            .where(Metrics.post.channel_id == channel_id)
+        )
+        return list(result.scalars().all())
+    
+    async def get_recent_metrics(self, limit: int = 10) -> List[Metrics]:
+        """Get recent metrics."""
+        result = await self.session.execute(
+            select(Metrics)
+            .order_by(Metrics.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())

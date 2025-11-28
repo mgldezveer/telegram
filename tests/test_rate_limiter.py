@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime, timedelta
 import time
 
-from src.llm.rate_limiter import RateLimitManager, ProviderRateLimiter
+from src.llm.rate_limit_manager import RateLimitManager, ProviderRateLimiter
 
 
 @pytest.fixture

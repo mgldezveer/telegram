@@ -5,7 +5,7 @@ import uuid
 from typing import Optional, Dict, List
 from datetime import datetime
 
-from src.llm.manager import LLMManager
+from src.llm.llm_manager import LLMManager
 from src.models.autopost import AutoPost, PostStatus
 
 logger = logging.getLogger(__name__)

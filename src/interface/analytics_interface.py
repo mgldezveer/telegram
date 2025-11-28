@@ -1,4 +1,4 @@
-"""Analytics interface for viewing channel statistics."""
+"""Analytics interface for viewing channel statistics with Telegram Analytics integration."""
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 from .keyboard_builder import KeyboardBuilder
 from .message_formatter import MessageFormatter
+from src.services.telegram_analytics_connector import TelegramAnalyticsConnector
 
 logger = logging.getLogger(__name__)
 
@@ -338,35 +339,89 @@ class AnalyticsInterface:
         Returns:
             Dictionary with metrics
         """
-        if not self.bot_controller or not self.bot_controller.analytics:
-            logger.warning("Analytics engine not available")
+        if not self.bot_controller:
+            logger.warning("Bot controller not available")
             return {'no_data': True}
         
         try:
-            # Get analytics from engine
+            # Get channel info to retrieve username
+            channel_info = await self._get_channel(channel_id)
+            if not channel_info:
+                return {'no_data': True}
+            
+            # Get channel username from channel info
+            channel_username = None
+            if isinstance(channel_info, dict):
+                channel_username = channel_info.get('username') or channel_info.get('name')
+            else:
+                channel_username = getattr(channel_info, 'username', None) or getattr(channel_info, 'name', None)
+            
+            # If we don't have a username, try to get it from channel manager
+            if not channel_username and self.bot_controller and self.bot_controller.channel_manager:
+                try:
+                    channel_details = await self.bot_controller.channel_manager.get_channel_info(channel_id)
+                    if channel_details:
+                        if isinstance(channel_details, dict):
+                            channel_username = channel_details.get('username', str(channel_id))
+                        else:
+                            channel_username = getattr(channel_details, 'username', str(channel_id))
+                except Exception:
+                    # If we can't get the username, use the channel_id as fallback
+                    channel_username = str(channel_id)
+            
+            # Initialize Telegram Analytics Connector
+            bot_token = self.bot_controller.bot.token if self.bot_controller.bot else None
+            if not bot_token:
+                logger.warning("Bot token not available for analytics connector")
+                return {'no_data': True}
+            
+            analytics_connector = TelegramAnalyticsConnector(bot_token)
+            
+            # Get analytics data
             period_start = datetime.now() - timedelta(days=30)
             period_end = datetime.now()
             
-            # Call analytics engine
-            metrics = await self.bot_controller.analytics.get_channel_analytics(
-                channel_id,
+            # Get engagement metrics
+            engagement_metrics = await analytics_connector.get_engagement_metrics(
+                channel_username,
                 period_start,
                 period_end
             )
             
-            if not metrics or not metrics.get('views'):
-                return {'no_data': True}
+            # Format metrics in expected structure
+            metrics = {
+                'views': engagement_metrics.views,
+                'reactions': engagement_metrics.reactions,
+                'shares': engagement_metrics.shares,
+                'comments': engagement_metrics.comments,
+                'engagement_rate': engagement_metrics.engagement_rate,
+                'reach': engagement_metrics.reach,
+                'impressions': engagement_metrics.impressions,
+                'saves': engagement_metrics.saves,
+                'forwards': engagement_metrics.forwards,
+                'total_posts': 0,  # This would need to be calculated separately
+                'period': 'последние 30 дней'
+            }
             
-            # Add period info
-            metrics['period'] = 'последние 30 дней'
-            
-            # Add recommendations if detailed
+            # Get more detailed metrics if requested
             if detailed:
+                # Get post metrics if we have specific post IDs
+                # For now, just add recommendations
                 metrics['recommendations'] = [
-                    "Публикуйте в 18:00-20:00 для максимального охвата",
+                    "Публикуйте в 18:0-20:00 для максимального охвата",
                     "Используйте больше визуального контента",
                     "Добавляйте вопросы для повышения вовлеченности"
                 ]
+                
+                # Try to get top posts (this would require additional implementation)
+                metrics['top_posts'] = []
+                metrics['best_time'] = "18:00-20:0"
+                metrics['growth'] = 5.2  # Placeholder growth rate
+            
+            # Check if we have any real data
+            if all(not v or v == 0 for k, v in metrics.items()
+                   if k not in ['period', 'recommendations', 'top_posts', 'best_time', 'growth']):
+                return {'no_data': True}
             
             return metrics
             

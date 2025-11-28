@@ -1,285 +1,347 @@
-"""Channel management service."""
+"""Channel Manager service for auto-posting system."""
 
 import logging
-from typing import Optional
+import uuid
 from datetime import datetime
-from dataclasses import dataclass
-from telegram import Bot
-from telegram.error import TelegramError
-from src.models import Channel, Post, PostStatus
-from src.config import config
+from typing import List, Optional, Dict, Any
+from sqlalchemy import select, update, delete
+from sqlalchemy.exc import IntegrityError
+
+from src.models.autopost import AutoPostChannel, PostStatus
+from src.database.autopost_db import autopost_db
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ChannelConfig:
-    """Channel configuration."""
-    name: str
-    posting_frequency: int = 3
-    optimal_times: list[str] = None
-    themes: list[str] = None
-    style_tone: str = "professional"
-    style_length: str = "medium"
-    emoji_usage: bool = True
-    hashtag_count: int = 3
-    media_preference: str = "text"
+class ChannelSettings:
+    """Channel settings data class."""
+    
+    def __init__(
+        self,
+        auto_publish: bool = True,
+        require_moderation: bool = False,
+        default_style: str = "professional",
+        default_language: str = "ru",
+        post_frequency: int = 3
+    ):
+        self.auto_publish = auto_publish
+        self.require_moderation = require_moderation
+        self.default_style = default_style
+        self.default_language = default_language
+        self.post_frequency = post_frequency
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "auto_publish": self.auto_publish,
+            "require_moderation": self.require_moderation,
+            "default_style": self.default_style,
+            "default_language": self.default_language,
+            "post_frequency": self.post_frequency
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ChannelSettings':
+        """Create from dictionary."""
+        return cls(
+            auto_publish=data.get("auto_publish", True),
+            require_moderation=data.get("require_moderation", False),
+            default_style=data.get("default_style", "professional"),
+            default_language=data.get("default_language", "ru"),
+            post_frequency=data.get("post_frequency", 3)
+        )
 
 
-@dataclass
-class PublishResult:
-    """Result of post publication."""
-    success: bool
-    message_id: Optional[int] = None
-    error: Optional[str] = None
+class PermissionStatus:
+    """Permission status data class."""
+    
+    def __init__(
+        self,
+        can_post: bool = False,
+        is_admin: bool = False,
+        error_message: Optional[str] = None
+    ):
+        self.can_post = can_post
+        self.is_admin = is_admin
+        self.error_message = error_message
+    
+    @property
+    def is_valid(self) -> bool:
+        """Check if permissions are valid."""
+        return self.can_post and self.is_admin
 
 
 class ChannelManager:
-    """Manager for channel operations and publishing."""
+    """Manager for auto-posting channels."""
     
-    def __init__(self, bot: Bot):
-        self.bot = bot
-        self.content_queues: dict[int, list[Post]] = {}
-    
-    async def register_channel(
-        self,
-        telegram_id: int,
-        channel_config: ChannelConfig
-    ) -> Channel:
-        """Register a new channel."""
-        logger.info(f"Registering channel {telegram_id}: {channel_config.name}")
-        
-        from src.models.base import async_session_maker
-        from src.repositories.channel_repository import ChannelRepository
-        
-        async with async_session_maker() as session:
-            channel_repo = ChannelRepository(session)
-            
-            # Check if channel already exists
-            existing = await channel_repo.get_by_telegram_id(telegram_id)
-            
-            if existing:
-                logger.info(f"Channel {telegram_id} already exists, updating")
-                # Update existing channel
-                await channel_repo.update(
-                    existing.id,
-                    name=channel_config.name,
-                    posting_frequency=channel_config.posting_frequency,
-                    optimal_times=channel_config.optimal_times or [],
-                    themes=channel_config.themes or [],
-                    style_tone=channel_config.style_tone,
-                    style_length=channel_config.style_length,
-                    emoji_usage=channel_config.emoji_usage,
-                    hashtag_count=channel_config.hashtag_count,
-                    media_preference=channel_config.media_preference,
-                    active=True
-                )
-                channel = await channel_repo.get_by_id(existing.id)
-            else:
-                # Create new channel
-                channel = Channel(
-                    telegram_id=telegram_id,
-                    name=channel_config.name,
-                    posting_frequency=channel_config.posting_frequency,
-                    optimal_times=channel_config.optimal_times or [],
-                    themes=channel_config.themes or [],
-                    style_tone=channel_config.style_tone,
-                    style_length=channel_config.style_length,
-                    emoji_usage=channel_config.emoji_usage,
-                    hashtag_count=channel_config.hashtag_count,
-                    media_preference=channel_config.media_preference,
-                    active=True
-                )
-                
-                # Save to database
-                channel = await channel_repo.create(channel)
-            
-            # Initialize content queue
-            self.content_queues[telegram_id] = []
-            
-            logger.info(f"Channel {telegram_id} registered successfully")
-            return channel
-    
-    async def publish_post(self, post: Post, channel: Channel) -> PublishResult:
-        """Publish a post to a channel."""
-        logger.info(f"Publishing post {post.id} to channel {channel.telegram_id}")
-        
-        try:
-            # Prepare message text
-            message_text = post.content
-            
-            # Add hashtags
-            if post.hashtags:
-                message_text += "\n\n" + " ".join(post.hashtags)
-            
-            # Send message
-            if post.media_url:
-                # Send with media
-                if post.media_type and post.media_type.startswith('image'):
-                    message = await self.bot.send_photo(
-                        chat_id=channel.telegram_id,
-                        photo=post.media_url,
-                        caption=message_text
-                    )
-                elif post.media_type and post.media_type.startswith('video'):
-                    message = await self.bot.send_video(
-                        chat_id=channel.telegram_id,
-                        video=post.media_url,
-                        caption=message_text
-                    )
-                else:
-                    # Fallback to text
-                    message = await self.bot.send_message(
-                        chat_id=channel.telegram_id,
-                        text=message_text
-                    )
-            else:
-                # Send text only
-                message = await self.bot.send_message(
-                    chat_id=channel.telegram_id,
-                    text=message_text
-                )
-            
-            logger.info(f"Post {post.id} published successfully, message_id: {message.message_id}")
-            
-            return PublishResult(
-                success=True,
-                message_id=message.message_id
-            )
-            
-        except TelegramError as e:
-            logger.error(f"Failed to publish post {post.id}: {e}")
-            return PublishResult(
-                success=False,
-                error=str(e)
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error publishing post {post.id}: {e}")
-            return PublishResult(
-                success=False,
-                error=str(e)
-            )
-    
-    async def get_channel_info(self, telegram_id: int) -> dict:
-        """Get channel information from Telegram."""
-        try:
-            chat = await self.bot.get_chat(telegram_id)
-            return {
-                'id': chat.id,
-                'title': chat.title,
-                'type': chat.type,
-                'username': chat.username,
-                'description': chat.description
-            }
-        except TelegramError as e:
-            logger.error(f"Failed to get channel info for {telegram_id}: {e}")
-            return {}
-    
-    async def remove_channel(self, channel_id: int, telegram_id: int):
-        """Remove and archive a channel."""
-        logger.info(f"Removing channel {channel_id}")
-        
-        from src.models.base import async_session_maker
-        from src.repositories.channel_repository import ChannelRepository
-        
-        async with async_session_maker() as session:
-            channel_repo = ChannelRepository(session)
-            
-            # Archive channel in database
-            await channel_repo.archive(channel_id)
-        
-        # Remove from content queues
-        if telegram_id in self.content_queues:
-            del self.content_queues[telegram_id]
-        
-        logger.info(f"Channel {channel_id} removed and archived")
-    
-    async def add_to_queue(self, channel_id: int, post: Post):
-        """Add post to channel's content queue."""
-        if channel_id not in self.content_queues:
-            self.content_queues[channel_id] = []
-        
-        self.content_queues[channel_id].append(post)
-        logger.info(f"Added post {post.id} to queue for channel {channel_id}")
-    
-    async def get_queue(self, channel_id: int) -> list[Post]:
-        """Get channel's content queue."""
-        return self.content_queues.get(channel_id, [])
-    
-    async def update_permissions(self, channel_id: int, permissions: dict):
-        """Update channel permissions."""
-        logger.info(f"Updating permissions for channel {channel_id}")
-        # In production, this would update actual Telegram permissions
-        # For now, just log the change
-    
-    async def get_all_channels(self) -> list[Channel]:
-        """Get all registered channels.
-        
-        Returns:
-            List of all registered channels
-        """
-        from src.models.base import async_session_maker
-        from src.repositories.channel_repository import ChannelRepository
-        
-        try:
-            async with async_session_maker() as session:
-                repo = ChannelRepository(session)
-                channels = await repo.get_all_active()
-                logger.info(f"Retrieved {len(channels)} active channels")
-                return channels
-        except Exception as e:
-            logger.error(f"Error getting all channels: {e}")
-            return []
-
-    async def get_channel_info(self, channel_id: int) -> Optional[dict]:
-        """Get channel information by database ID.
+    def __init__(self, bot=None):
+        """Initialize channel manager.
         
         Args:
-            channel_id: Database ID of the channel
-            
-        Returns:
-            Channel info dictionary or None if not found
+            bot: Telegram bot instance for permission checking
         """
-        from src.models.base import async_session_maker
-        from src.repositories.channel_repository import ChannelRepository
+        self.bot = bot
+    
+    async def add_channel(
+        self,
+        channel_id: int,
+        name: str,
+        settings: Optional[ChannelSettings] = None
+    ) -> AutoPostChannel:
+        """Add a new channel to the system.
         
+        Args:
+            channel_id: Telegram channel ID
+            name: Channel name
+            settings: Channel settings (optional)
+        
+        Returns:
+            Created channel object
+        
+        Raises:
+            ValueError: If channel already exists
+            RuntimeError: If database operation fails
+        """
         try:
-            async with async_session_maker() as session:
-                repo = ChannelRepository(session)
-                channel = await repo.get_by_id(channel_id)
+            # Check if channel already exists
+            existing = await self.get_channel(channel_id)
+            if existing:
+                raise ValueError(f"Channel {channel_id} already exists")
+            
+            # Create default settings if not provided
+            if settings is None:
+                settings = ChannelSettings()
+            
+            # Create channel
+            async with autopost_db.session() as session:
+                channel = AutoPostChannel(
+                    id=channel_id,
+                    name=name,
+                    is_active=True,
+                    settings=settings.to_dict(),
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
                 
-                if not channel:
-                    logger.warning(f"Channel with ID {channel_id} not found in database")
-                    return None
+                session.add(channel)
+                await session.commit()
+                await session.refresh(channel)
                 
-                # Try to get info from Telegram
-                try:
-                    chat = await self.bot.get_chat(channel.telegram_id)
-                    return {
-                        'id': channel.id,
-                        'telegram_id': channel.telegram_id,
-                        'title': chat.title,
-                        'name': channel.name,
-                        'username': chat.username,
-                        'type': chat.type,
-                        'description': chat.description,
-                        'active': channel.active
-                    }
-                except TelegramError as e:
-                    logger.warning(f"Cannot get Telegram info for channel {channel.telegram_id}: {e}")
-                    # Return database info as fallback
-                    return {
-                        'id': channel.id,
-                        'telegram_id': channel.telegram_id,
-                        'title': channel.name,
-                        'name': channel.name,
-                        'username': None,
-                        'type': 'channel',
-                        'description': None,
-                        'active': channel.active,
-                        'from_db': True
-                    }
+                logger.info(f"✅ Added channel: {name} (ID: {channel_id})")
+                return channel
+                
+        except IntegrityError as e:
+            logger.error(f"❌ Channel {channel_id} already exists: {e}")
+            raise ValueError(f"Channel {channel_id} already exists")
+        except Exception as e:
+            logger.error(f"❌ Failed to add channel {channel_id}: {e}")
+            raise RuntimeError(f"Failed to add channel: {e}")
+    
+    async def remove_channel(self, channel_id: int) -> bool:
+        """Remove (deactivate) a channel.
+        
+        Args:
+            channel_id: Telegram channel ID
+        
+        Returns:
+            True if channel was removed, False if not found
+        """
+        try:
+            async with autopost_db.session() as session:
+                # Update channel to inactive
+                result = await session.execute(
+                    update(AutoPostChannel)
+                    .where(AutoPostChannel.id == channel_id)
+                    .values(is_active=False, updated_at=datetime.utcnow())
+                )
+                
+                if result.rowcount > 0:
+                    await session.commit()
+                    logger.info(f"✅ Deactivated channel: {channel_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Channel {channel_id} not found")
+                    return False
                     
         except Exception as e:
-            logger.error(f"Error getting channel info for {channel_id}: {e}")
+            logger.error(f"❌ Failed to remove channel {channel_id}: {e}")
+            raise RuntimeError(f"Failed to remove channel: {e}")
+    
+    async def get_channel(self, channel_id: int) -> Optional[AutoPostChannel]:
+        """Get channel by ID.
+        
+        Args:
+            channel_id: Telegram channel ID
+        
+        Returns:
+            Channel object or None if not found
+        """
+        try:
+            async with autopost_db.session() as session:
+                result = await session.execute(
+                    select(AutoPostChannel).where(AutoPostChannel.id == channel_id)
+                )
+                channel = result.scalar_one_or_none()
+                return channel
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to get channel {channel_id}: {e}")
             return None
+    
+    async def list_channels(self, active_only: bool = True) -> List[AutoPostChannel]:
+        """List all channels.
+        
+        Args:
+            active_only: If True, return only active channels
+        
+        Returns:
+            List of channel objects
+        """
+        try:
+            async with autopost_db.session() as session:
+                query = select(AutoPostChannel)
+                
+                if active_only:
+                    query = query.where(AutoPostChannel.is_active == True)
+                
+                query = query.order_by(AutoPostChannel.created_at.desc())
+                
+                result = await session.execute(query)
+                channels = result.scalars().all()
+                
+                return list(channels)
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to list channels: {e}")
+            return []
+    
+    async def update_settings(
+        self,
+        channel_id: int,
+        settings: ChannelSettings
+    ) -> bool:
+        """Update channel settings.
+        
+        Args:
+            channel_id: Telegram channel ID
+            settings: New channel settings
+        
+        Returns:
+            True if settings were updated, False if channel not found
+        """
+        try:
+            async with autopost_db.session() as session:
+                result = await session.execute(
+                    update(AutoPostChannel)
+                    .where(AutoPostChannel.id == channel_id)
+                    .values(
+                        settings=settings.to_dict(),
+                        updated_at=datetime.utcnow()
+                    )
+                )
+                
+                if result.rowcount > 0:
+                    await session.commit()
+                    logger.info(f"✅ Updated settings for channel: {channel_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Channel {channel_id} not found")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to update settings for channel {channel_id}: {e}")
+            raise RuntimeError(f"Failed to update settings: {e}")
+    
+    async def check_permissions(self, channel_id: int) -> PermissionStatus:
+        """Check bot permissions in channel.
+        
+        Args:
+            channel_id: Telegram channel ID
+        
+        Returns:
+            Permission status object
+        """
+        if not self.bot:
+            logger.warning("⚠️ Bot instance not provided, skipping permission check")
+            return PermissionStatus(
+                can_post=True,
+                is_admin=True,
+                error_message="Permission check skipped (no bot instance)"
+            )
+        
+        try:
+            # Get bot's member status in channel
+            member = await self.bot.get_chat_member(channel_id, self.bot.id)
+            
+            # Check if bot is admin
+            is_admin = member.status in ['creator', 'administrator']
+            
+            # Check if bot can post
+            can_post = False
+            if member.status == 'creator':
+                can_post = True
+            elif member.status == 'administrator':
+                can_post = member.can_post_messages or member.can_edit_messages
+            
+            if is_admin and can_post:
+                logger.info(f"✅ Bot has valid permissions in channel {channel_id}")
+                return PermissionStatus(can_post=True, is_admin=True)
+            else:
+                error_msg = "Bot is not admin" if not is_admin else "Bot cannot post messages"
+                logger.warning(f"⚠️ {error_msg} in channel {channel_id}")
+                return PermissionStatus(
+                    can_post=can_post,
+                    is_admin=is_admin,
+                    error_message=error_msg
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to check permissions for channel {channel_id}: {e}")
+            return PermissionStatus(
+                can_post=False,
+                is_admin=False,
+                error_message=str(e)
+            )
+    
+    async def get_settings(self, channel_id: int) -> Optional[ChannelSettings]:
+        """Get channel settings.
+        
+        Args:
+            channel_id: Telegram channel ID
+        
+        Returns:
+            Channel settings or None if channel not found
+        """
+        channel = await self.get_channel(channel_id)
+        if channel and channel.settings:
+            return ChannelSettings.from_dict(channel.settings)
+        return None
+    
+    async def activate_channel(self, channel_id: int) -> bool:
+        """Activate a channel.
+        
+        Args:
+            channel_id: Telegram channel ID
+        
+        Returns:
+            True if channel was activated, False if not found
+        """
+        try:
+            async with autopost_db.session() as session:
+                result = await session.execute(
+                    update(AutoPostChannel)
+                    .where(AutoPostChannel.id == channel_id)
+                    .values(is_active=True, updated_at=datetime.utcnow())
+                )
+                
+                if result.rowcount > 0:
+                    await session.commit()
+                    logger.info(f"✅ Activated channel: {channel_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Channel {channel_id} not found")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to activate channel {channel_id}: {e}")
+            raise RuntimeError(f"Failed to activate channel: {e}")

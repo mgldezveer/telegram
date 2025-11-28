@@ -1,6 +1,6 @@
 """Channel repository."""
 
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,10 +34,17 @@ class ChannelRepository:
         )
         return result.scalar_one_or_none()
     
-    async def get_all_active(self) -> list[Channel]:
+    async def get_all_active(self) -> List[Channel]:
         """Get all active channels."""
         result = await self.session.execute(
             select(Channel).where(Channel.active == True)
+        )
+        return list(result.scalars().all())
+    
+    async def get_all_with_stats(self) -> List[Channel]:
+        """Get all channels with basic statistics."""
+        result = await self.session.execute(
+            select(Channel)
         )
         return list(result.scalars().all())
     
@@ -58,3 +65,17 @@ class ChannelRepository:
             )
         )
         await self.session.commit()
+    
+    async def get_by_username(self, username: str) -> Optional[Channel]:
+        """Get channel by username."""
+        result = await self.session.execute(
+            select(Channel).where(Channel.username == username)
+        )
+        return result.scalar_one_or_none()
+    
+    async def get_by_title(self, title: str) -> Optional[Channel]:
+        """Get channel by title."""
+        result = await self.session.execute(
+            select(Channel).where(Channel.title == title)
+        )
+        return result.scalar_one_or_none()

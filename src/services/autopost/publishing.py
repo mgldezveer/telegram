@@ -1,15 +1,18 @@
-"""Publishing Service for auto-posting system."""
+"""Publishing Service for auto-posting system with error resilience."""
 
 import logging
 import asyncio
-from typing import Optional, List
+import traceback
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.error import TelegramError
+from telegram.error import TelegramError, RetryAfter, TimedOut
 from telegram.constants import ParseMode
 
 from src.models.autopost import AutoPost, AutoPostPublication, PublishStatus, PostStatus
 from src.database.autopost_db import autopost_db
+from src.services.enhanced_error_handler import EnhancedErrorHandler, ErrorCategory
+from src.services.enhanced_publishing_service import EnhancedPublishingService
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +24,19 @@ class PublishResult:
         self,
         success: bool,
         message_id: Optional[int] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        retry_count: int = 0,
+        rate_limited: bool = False
     ):
         self.success = success
         self.message_id = message_id
         self.error = error
+        self.retry_count = retry_count
+        self.rate_limited = rate_limited
 
 
 class AutoPostPublisher:
-    """Publisher for auto-posting."""
+    """Publisher for auto-posting with error resilience."""
     
     def __init__(self, bot: Bot, max_retries: int = 3):
         """Initialize publisher.
@@ -40,13 +47,15 @@ class AutoPostPublisher:
         """
         self.bot = bot
         self.max_retries = max_retries
+        self.enhanced_publisher = EnhancedPublishingService(bot, max_retries=max_retries)
+        self.error_handler = EnhancedErrorHandler(bot)
     
     async def publish_post(
         self,
         post: AutoPost,
         retry_count: int = 0
     ) -> PublishResult:
-        """Publish post to channel.
+        """Publish post to channel with enhanced error handling.
         
         Args:
             post: Post to publish
@@ -55,54 +64,49 @@ class AutoPostPublisher:
         Returns:
             Publication result
         """
-        logger.info(f"Publishing post {post.id} to channel {post.channel_id}")
-        
         try:
-            # Format content
-            content = self._format_content(post)
+            logger.info(f"Publishing post {post.id} to channel {post.channel_id}")
             
-            # Build keyboard if buttons exist
-            reply_markup = None
-            if post.buttons:
-                reply_markup = self._build_keyboard(post.buttons)
+            # Use the enhanced publisher for better error resilience
+            result = await self.enhanced_publisher.publish_post(post, post.channel_id)
             
-            # Send message
-            message = await self.bot.send_message(
-                chat_id=post.channel_id,
-                text=content,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
+            # Update post status based on result
+            if result.success:
+                async with autopost_db.session() as session:
+                    post.status = PostStatus.PUBLISHED.value
+                    post.published_at = datetime.utcnow()
+                    session.add(post)
+                    await session.commit()
+                
+                logger.info(f"✅ Published post {post.id}, message_id: {result.message_id}")
+            else:
+                async with autopost_db.session() as session:
+                    post.status = PostStatus.FAILED.value
+                    session.add(post)
+                    await session.commit()
+                
+                logger.error(f"❌ Failed to publish post {post.id}: {result.error_message}")
+            
+            # Return a compatible result
+            return PublishResult(
+                success=result.success,
+                message_id=result.message_id,
+                error=result.error_message,
+                retry_count=result.retry_count,
+                rate_limited=result.rate_limited
             )
             
-            # Record publication
-            await self._record_publication(
-                post.channel_id,
-                post.id,
-                PublishStatus.SUCCESS,
-                message.message_id
+        except Exception as e:
+            logger.error(f"Unexpected error publishing post {post.id}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Handle the error with our enhanced error handler
+            await self.error_handler.handle_error(
+                e,
+                ErrorCategory.PUBLISHING,
+                "autopost_publisher",
+                {"post_id": post.id, "channel_id": post.channel_id}
             )
-            
-            # Update post status
-            async with autopost_db.session() as session:
-                post.status = PostStatus.PUBLISHED.value
-                post.published_at = datetime.utcnow()
-                session.add(post)
-                await session.commit()
-            
-            logger.info(f"✅ Published post {post.id}, message_id: {message.message_id}")
-            return PublishResult(success=True, message_id=message.message_id)
-            
-        except TelegramError as e:
-            logger.error(f"Failed to publish post {post.id}: {e}")
-            
-            # Retry logic
-            if retry_count < self.max_retries:
-                logger.info(f"Retrying post {post.id} (attempt {retry_count + 1}/{self.max_retries})")
-                
-                # Exponential backoff
-                await asyncio.sleep(2 ** retry_count)
-                
-                return await self.publish_post(post, retry_count + 1)
             
             # Record failure
             await self._record_publication(
@@ -119,14 +123,14 @@ class AutoPostPublisher:
                 session.add(post)
                 await session.commit()
             
-            return PublishResult(success=False, error=str(e))
+            return PublishResult(success=False, error=str(e), retry_count=retry_count)
     
     async def publish_with_media(
         self,
         post: AutoPost,
         media: List[dict]
     ) -> PublishResult:
-        """Publish post with media.
+        """Publish post with media using enhanced error handling.
         
         Args:
             post: Post to publish
@@ -135,70 +139,24 @@ class AutoPostPublisher:
         Returns:
             Publication result
         """
-        logger.info(f"Publishing post {post.id} with media")
-        
         try:
-            content = self._format_content(post)
+            logger.info(f"Publishing post {post.id} with media")
             
-            # Send based on media type
-            if len(media) == 1:
-                # Single media
-                media_item = media[0]
-                media_type = media_item.get('type', 'photo')
-                
-                if media_type == 'photo':
-                    message = await self.bot.send_photo(
-                        chat_id=post.channel_id,
-                        photo=media_item['url'],
-                        caption=content,
-                        parse_mode=ParseMode.HTML
-                    )
-                elif media_type == 'video':
-                    message = await self.bot.send_video(
-                        chat_id=post.channel_id,
-                        video=media_item['url'],
-                        caption=content,
-                        parse_mode=ParseMode.HTML
-                    )
-                else:
-                    # Fallback to text
-                    message = await self.bot.send_message(
-                        chat_id=post.channel_id,
-                        text=content,
-                        parse_mode=ParseMode.HTML
-                    )
-            else:
-                # Media group
-                from telegram import InputMediaPhoto, InputMediaVideo
-                
-                media_group = []
-                for i, item in enumerate(media[:10]):  # Max 10 items
-                    media_type = item.get('type', 'photo')
-                    caption = content if i == 0 else None
-                    
-                    if media_type == 'photo':
-                        media_group.append(
-                            InputMediaPhoto(media=item['url'], caption=caption)
-                        )
-                    elif media_type == 'video':
-                        media_group.append(
-                            InputMediaVideo(media=item['url'], caption=caption)
-                        )
-                
-                messages = await self.bot.send_media_group(
-                    chat_id=post.channel_id,
-                    media=media_group
-                )
-                message = messages[0] if messages else None
+            # Convert media format for enhanced publisher
+            from src.services.enhanced_publishing_service import Media
+            enhanced_media = []
+            for media_item in media:
+                enhanced_media.append(Media(
+                    type=media_item.get('type', 'photo'),
+                    url=media_item['url'],
+                    caption=media_item.get('caption')
+                ))
             
-            if message:
-                await self._record_publication(
-                    post.channel_id,
-                    post.id,
-                    PublishStatus.SUCCESS,
-                    message.message_id
-                )
-                
+            # Use the enhanced publisher for better error resilience
+            result = await self.enhanced_publisher.publish_with_media(post, post.channel_id, enhanced_media)
+            
+            # Update post status based on result
+            if result.success:
                 async with autopost_db.session() as session:
                     post.status = PostStatus.PUBLISHED.value
                     post.published_at = datetime.utcnow()
@@ -206,13 +164,36 @@ class AutoPostPublisher:
                     await session.commit()
                 
                 logger.info(f"✅ Published post {post.id} with media")
-                return PublishResult(success=True, message_id=message.message_id)
+            else:
+                async with autopost_db.session() as session:
+                    post.status = PostStatus.FAILED.value
+                    session.add(post)
+                    await session.commit()
+                
+                logger.error(f"❌ Failed to publish post {post.id} with media: {result.error_message}")
             
-            return PublishResult(success=False, error="No message returned")
+            # Return a compatible result
+            return PublishResult(
+                success=result.success,
+                message_id=result.message_id,
+                error=result.error_message,
+                retry_count=result.retry_count,
+                rate_limited=result.rate_limited
+            )
             
-        except TelegramError as e:
-            logger.error(f"Failed to publish post {post.id} with media: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error publishing post {post.id} with media: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             
+            # Handle the error with our enhanced error handler
+            await self.error_handler.handle_error(
+                e,
+                ErrorCategory.PUBLISHING,
+                "autopost_publisher",
+                {"post_id": post.id, "channel_id": post.channel_id, "media_count": len(media)}
+            )
+            
+            # Record failure
             await self._record_publication(
                 post.channel_id,
                 post.id,
@@ -229,7 +210,7 @@ class AutoPostPublisher:
         options: List[str],
         is_anonymous: bool = True
     ) -> PublishResult:
-        """Publish poll to channel.
+        """Publish poll to channel using enhanced error handling.
         
         Args:
             channel_id: Channel ID
@@ -240,29 +221,41 @@ class AutoPostPublisher:
         Returns:
             Publication result
         """
-        logger.info(f"Publishing poll to channel {channel_id}")
-        
         try:
-            message = await self.bot.send_poll(
-                chat_id=channel_id,
+            logger.info(f"Publishing poll to channel {channel_id}")
+            
+            # Use the enhanced publisher for better error resilience
+            result = await self.enhanced_publisher.publish_poll(
                 question=question,
                 options=options,
-                is_anonymous=is_anonymous
-            )
-            
-            await self._record_publication(
-                channel_id,
-                None,
-                PublishStatus.SUCCESS,
-                message.message_id
+                channel_id=channel_id,
+                is_quiz=False
             )
             
             logger.info(f"✅ Published poll to channel {channel_id}")
-            return PublishResult(success=True, message_id=message.message_id)
             
-        except TelegramError as e:
-            logger.error(f"Failed to publish poll: {e}")
+            # Return a compatible result
+            return PublishResult(
+                success=result.success,
+                message_id=result.message_id,
+                error=result.error_message,
+                retry_count=result.retry_count,
+                rate_limited=result.rate_limited
+            )
             
+        except Exception as e:
+            logger.error(f"Unexpected error publishing poll to channel {channel_id}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Handle the error with our enhanced error handler
+            await self.error_handler.handle_error(
+                e,
+                ErrorCategory.PUBLISHING,
+                "autopost_publisher",
+                {"channel_id": channel_id, "poll_question": question}
+            )
+            
+            # Record failure
             await self._record_publication(
                 channel_id,
                 None,

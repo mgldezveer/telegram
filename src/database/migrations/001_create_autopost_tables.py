@@ -1,6 +1,9 @@
 """Create autopost tables migration."""
 
+import logging
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 
 def upgrade(connection):
@@ -85,34 +88,36 @@ def upgrade(connection):
     
     # Create indexes
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_autopost_posts_channel 
+        CREATE INDEX IF NOT EXISTS idx_autopost_posts_channel
         ON autopost_posts(channel_id)
     """))
     
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_autopost_posts_status 
+        CREATE INDEX IF NOT EXISTS idx_autopost_posts_status
         ON autopost_posts(status)
     """))
     
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_autopost_posts_scheduled 
+        CREATE INDEX IF NOT EXISTS idx_autopost_posts_scheduled
         ON autopost_posts(scheduled_for)
     """))
     
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_autopost_schedules_channel 
+        CREATE INDEX IF NOT EXISTS idx_autopost_schedules_channel
         ON autopost_schedules(channel_id)
     """))
     
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_autopost_publications_channel 
+        CREATE INDEX IF NOT EXISTS idx_autopost_publications_channel
         ON autopost_publications(channel_id)
     """))
     
     connection.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_content_sources_active 
+        CREATE INDEX IF NOT EXISTS idx_content_sources_active
         ON content_sources(is_active, priority)
     """))
+    
+    logger.info("✅ Auto-post tables created successfully")
 
 
 def downgrade(connection):
@@ -122,3 +127,5 @@ def downgrade(connection):
     connection.execute(text("DROP TABLE IF EXISTS autopost_posts"))
     connection.execute(text("DROP TABLE IF EXISTS autopost_channels"))
     connection.execute(text("DROP TABLE IF EXISTS content_sources"))
+    
+    logger.info("✅ Auto-post tables dropped successfully")

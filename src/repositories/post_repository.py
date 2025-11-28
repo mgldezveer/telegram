@@ -1,6 +1,6 @@
 """Post repository."""
 
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +27,7 @@ class PostRepository:
         )
         return result.scalar_one_or_none()
     
-    async def get_by_channel(self, channel_id: int, status: Optional[PostStatus] = None) -> list[Post]:
+    async def get_by_channel(self, channel_id: int, status: Optional[PostStatus] = None) -> List[Post]:
         """Get posts by channel."""
         query = select(Post).where(Post.channel_id == channel_id)
         if status:
@@ -35,7 +35,7 @@ class PostRepository:
         result = await self.session.execute(query)
         return list(result.scalars().all())
     
-    async def get_scheduled(self, before: datetime) -> list[Post]:
+    async def get_scheduled(self, before: datetime) -> List[Post]:
         """Get scheduled posts before a certain time."""
         result = await self.session.execute(
             select(Post).where(
@@ -62,3 +62,18 @@ class PostRepository:
             delete(Post).where(Post.id == post_id)
         )
         await self.session.commit()
+    
+    async def get_count_by_status(self, channel_id: int, status: PostStatus) -> int:
+        """Get count of posts by channel and status."""
+        result = await self.session.execute(
+            select(Post.id)
+            .where(Post.channel_id == channel_id, Post.status == status)
+        )
+        return len(result.scalars().all())
+    
+    async def get_all_by_status(self, status: PostStatus) -> List[Post]:
+        """Get all posts with specific status."""
+        result = await self.session.execute(
+            select(Post).where(Post.status == status)
+        )
+        return list(result.scalars().all())

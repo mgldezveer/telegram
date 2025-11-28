@@ -3,7 +3,7 @@ version: '3.8'
 services:
   bot:
     build: .
-    container_name: ai-content-bot
+    container_name: telegram-bot
     restart: unless-stopped
     env_file: .env
     depends_on:
@@ -17,12 +17,27 @@ services:
     ports:
       - "9090:9090"
 
+  autopost:
+    build: .
+    container_name: telegram-autopost
+    restart: unless-stopped
+    env_file: .env
+    command: python run_autopost.py
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    networks:
+      - bot-network
+
   db:
     image: postgres:15-alpine
     container_name: bot-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME:-ai_content_bot}
+      POSTGRES_DB: ${DB_NAME:-telegram_bot}
       POSTGRES_USER: ${DB_USER:-botuser}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
     volumes:
@@ -53,25 +68,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    environment:
-      # Optional: Set Redis password
-      # - REDIS_PASSWORD=${REDIS_PASSWORD}
-      # To use password, update command to:
-      # command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
-
-  celery-worker:
-    build: .
-    container_name: bot-celery-worker
-    restart: unless-stopped
-    env_file: .env
-    command: celery -A src.tasks worker --loglevel=info
-    depends_on:
-      - redis
-      - db
-    networks:
-      - bot-network
-    volumes:
-      - ./logs:/app/logs
 
   prometheus:
     image: prom/prometheus:latest
@@ -88,10 +84,26 @@ services:
     ports:
       - "9091:9090"
 
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: bot-grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - bot-network
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+
 volumes:
   postgres_data:
   redis_data:
   prometheus_data:
+  grafana_data:
 
 networks:
   bot-network:

@@ -178,7 +178,7 @@ class ContentInterface:
             
             # Generate content
             if self.bot_controller and self.bot_controller.content_generator:
-                from src.services.content_generator import ContentStyle
+                from src.services.enhanced_content_generator import ContentStyle
                 
                 # Use default style for now
                 style = ContentStyle(tone="professional", length="medium")
@@ -358,7 +358,7 @@ class ContentInterface:
             theme = post.theme if hasattr(post, 'theme') else "общая тема"
             
             if self.bot_controller and self.bot_controller.content_generator:
-                from src.services.content_generator import ContentStyle
+                from src.services.enhanced_content_generator import ContentStyle
                 
                 style = ContentStyle(tone="professional", length="medium")
                 

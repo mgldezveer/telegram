@@ -1,41 +1,79 @@
-.PHONY: help install check init run clean test
+# Docker commands for Telegram Bot
 
-help:
-	@echo "AI Content Bot - Available commands:"
-	@echo ""
-	@echo "  make install    - Install dependencies"
-	@echo "  make check      - Check setup and configuration"
-	@echo "  make init       - Initialize database"
-	@echo "  make run        - Run the bot"
-	@echo "  make clean      - Clean temporary files"
-	@echo "  make test       - Run tests"
-	@echo ""
+# Build services
+build:
+	docker-compose build
 
-install:
-	@echo "📦 Installing dependencies..."
-	pip install -r requirements.txt
-	@echo "✅ Dependencies installed!"
+# Start services in background
+up:
+	docker-compose up -d
 
-check:
-	@echo "🔍 Checking setup..."
-	python check_setup.py
+# Start all services (including autopost) in background
+start:
+	docker-compose up -d
 
-init:
-	@echo "🗄️  Initializing database..."
-	python init_db.py
+# Stop all services
+stop:
+	docker-compose down
 
+# Start services in foreground
 run:
-	@echo "🚀 Starting bot..."
-	python run.py
+	docker-compose up
 
+# View logs
+logs:
+	docker-compose logs -f
+
+# View specific service logs
+logs-bot:
+	docker-compose logs -f bot
+
+logs-autopost:
+	docker-compose logs -f autopost
+
+logs-db:
+	docker-compose logs -f db
+
+logs-redis:
+	docker-compose logs -f redis
+
+# Execute command in bot container
+exec-bot:
+	docker-compose exec bot bash
+
+# Execute command in autopost container
+exec-autopost:
+	docker-compose exec autopost bash
+
+# Initialize database
+init-db:
+	docker-compose exec bot python init_db.py
+
+# Initialize autopost database
+init-autopost-db:
+	docker-compose exec bot python init_autopost_db.py
+
+# Check database
+check-db:
+	docker-compose exec bot python check_db.py
+
+# Check setup
+check-setup:
+	docker-compose exec bot python check_setup.py
+
+# Clean channels
+clean-channels:
+	docker-compose exec bot python clean_channels.py
+
+# Restart services
+restart:
+	docker-compose restart
+
+# Remove containers and volumes
 clean:
-	@echo "🧹 Cleaning temporary files..."
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.pyo" -delete
-	find . -type f -name "*.log" -delete
-	@echo "✅ Cleaned!"
+	docker-compose down -v
 
-test:
-	@echo "🧪 Running tests..."
-	pytest tests/ -v
+# Remove containers, volumes and rebuild
+rebuild: clean build start
+
+.PHONY: build up start stop run logs logs-bot logs-autopost exec-bot exec-autopost init-db check-db check-setup clean-channels restart clean rebuild

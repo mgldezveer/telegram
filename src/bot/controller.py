@@ -1,20 +1,21 @@
 """Bot controller - main entry point for bot operations."""
 
 import logging
+from typing import Optional
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from src.config import config
-from src.services.content_generator import ContentGenerator, ContentStyle
+from src.services.enhanced_content_generator import EnhancedContentGenerator, ContentStyle
 from src.services.content_optimizer import ContentOptimizer
-from src.services.scheduler_service import SchedulerService
+from src.services.enhanced_scheduler import EnhancedScheduler
 from src.services.channel_manager import ChannelManager, ChannelConfig
-from src.services.publishing_service import PublishingService
+from src.services.enhanced_publishing_service import EnhancedPublishingService
 from src.services.analytics_engine import AnalyticsEngine
 from src.services.quality_control import QualityControl
-from src.services.error_handler import ErrorHandler
+from src.services.enhanced_error_handler import EnhancedErrorHandler
 from src.services.settings_storage import SettingsStorage
 from src.services.rate_limiter import ActionRateLimiter
-from src.services.state_manager import StateManager, NavigationHistory
+from src.services.enhanced_state_manager import EnhancedStateManager
 from src.interface.menu_system import MenuSystem
 from src.interface.callback_router import CallbackRouter
 from src.interface.channel_interface import ChannelInterface
@@ -23,14 +24,12 @@ from src.interface.content_interface import ContentInterface
 from src.interface.analytics_interface import AnalyticsInterface
 from src.interface.settings_interface import SettingsInterface
 from src.interface.schedule_interface import ScheduleInterface
-from src.llm.manager import LLMManager
-from src.llm.cache import CacheService
-from src.llm.rate_limiter import RateLimitManager
-from src.llm.providers import (
-    create_groq_provider_from_env,
-    create_gemini_provider_from_env
+from src.interface.validators import validate_user_input
+from src.llm import (
+    LLMManager,
+    create_llm_manager_from_env,
+    get_config as get_llm_config
 )
-from src.llm.config import get_config as get_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,20 +45,19 @@ class BotController:
         self.llm_manager = self._initialize_llm_manager()
         
         # Initialize services
-        self.content_generator = ContentGenerator()
+        self.content_generator = EnhancedContentGenerator(llm_manager=self.llm_manager)
         self.content_optimizer = ContentOptimizer()
-        self.scheduler = SchedulerService()
+        self.scheduler = EnhancedScheduler()
         self.analytics = AnalyticsEngine()
         self.quality_control = QualityControl()
-        self.error_handler = ErrorHandler()
+        self.error_handler = EnhancedErrorHandler()
         self.settings_storage = SettingsStorage()
         self.rate_limiter = ActionRateLimiter()
-        self.state_manager = StateManager(session_timeout=3600)  # 1 hour
-        self.navigation_history = NavigationHistory(max_history=10)
+        self.state_manager = EnhancedStateManager(session_timeout=3600)  # 1 hour
         
         # Channel manager will be initialized after bot is created
         self.channel_manager: ChannelManager = None
-        self.publishing_service: PublishingService = None
+        self.publishing_service: EnhancedPublishingService = None
         
         # Interface components
         self.menu_system: MenuSystem = None
@@ -78,58 +76,15 @@ class BotController:
         logger.info("Initializing LLM Manager...")
         
         try:
-            # Load LLM configuration
-            llm_config = get_llm_config()
+            # Create LLM Manager from environment (handles all configuration)
+            manager = create_llm_manager_from_env()
             
-            # Create providers
-            providers = []
-            
-            # Groq
-            groq = create_groq_provider_from_env()
-            if groq:
-                providers.append(groq)
-                logger.info("✅ Groq provider initialized")
-            
-            # Gemini
-            gemini = create_gemini_provider_from_env()
-            if gemini:
-                providers.append(gemini)
-                logger.info("✅ Gemini provider initialized")
-            
-            if not providers:
-                logger.warning("⚠️ No LLM providers available! Bot will use mock generation.")
-                return None
-            
-            # Create cache service if enabled
-            cache_service = None
-            if llm_config.cache_enabled:
-                cache_service = CacheService(
-                    max_memory_size=llm_config.cache_max_size,
-                    default_ttl=llm_config.cache_ttl
-                )
-                logger.info("✅ LLM cache enabled")
-            
-            # Create rate limiter if enabled
-            rate_limiter = None
-            if llm_config.rate_limit_enabled:
-                rate_limiter = RateLimitManager()
-                logger.info("✅ LLM rate limiter enabled")
-            
-            # Create LLM Manager
-            manager = LLMManager(
-                providers=providers,
-                cache_service=cache_service,
-                rate_limiter=rate_limiter,
-                max_retries=llm_config.max_retries,
-                retry_delay=llm_config.retry_delay
-            )
-            
-            logger.info(f"✅ LLM Manager initialized with {len(providers)} provider(s)")
+            logger.info(f"✅ LLM Manager initialized successfully")
             return manager
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize LLM Manager: {e}")
-            logger.warning("⚠️ Bot will use mock generation")
+            logger.warning("⚠️ Bot will use fallback content generation")
             return None
     
     async def start(self):
@@ -152,7 +107,7 @@ class BotController:
             
             # Initialize services that need bot
             self.channel_manager = ChannelManager(self.bot)
-            self.publishing_service = PublishingService(self.channel_manager)
+            self.publishing_service = EnhancedPublishingService(self.bot)
             
             # Initialize interface components
             self.menu_system = MenuSystem(bot_controller=self)
@@ -180,6 +135,10 @@ class BotController:
             # Start state cleanup task
             await self.state_manager.start_cleanup_task()
             logger.info("State cleanup task started")
+            
+            # Validate admin configuration
+            if not config.bot.admin_ids:
+                logger.warning("⚠️ No admin IDs configured - bot will have limited functionality")
             
             # Start bot
             self.is_running = True
@@ -321,8 +280,15 @@ class BotController:
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
-        logger.info(f"Received /start command from user {update.effective_user.id}")
+        user_id = update.effective_user.id
+        logger.info(f"Received /start command from user {user_id}")
+        
         try:
+            # Validate user input
+            if not validate_user_input(str(user_id)):
+                await update.message.reply_text("❌ Недопустимый ID пользователя")
+                return
+            
             # Show main menu with interface
             await self.menu_system.show_main_menu(update, context)
             logger.info("Main menu shown successfully")
@@ -350,14 +316,19 @@ class BotController:
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
-        if not self._is_admin(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._validate_admin_access(user_id, "/status"):
             await update.message.reply_text("❌ Эта команда доступна только администраторам")
             return
         
-        # Get system resources
-        resources = await self.error_handler.check_resources()
-        
-        status_text = f"""
+        try:
+            # Get system resources
+            resources = await self.error_handler.check_resources()
+            
+            # Get cache stats
+            cache_stats = await self.state_manager.get_cache_stats()
+            
+            status_text = f"""
 📊 Статус системы:
 
 🤖 Бот: {'Работает' if self.is_running else 'Остановлен'}
@@ -365,14 +336,21 @@ class BotController:
 💾 Память: {resources['memory_percent']:.1f}%
 💿 Диск: {resources['disk_percent']:.1f}%
 
-📝 Ошибок за сессию: {len(self.error_handler.error_log)}
-        """
-        
-        await update.message.reply_text(status_text)
+📊 Сессии: {cache_stats['total_sessions']} активных
+📊 История: {cache_stats['total_histories']} пользователей
+📊 Ошибок: {len(self.error_handler.error_log)} за сессию
+📊 Ограничение запросов: {self.rate_limiter.get_stats()}
+            """
+            
+            await update.message.reply_text(status_text)
+        except Exception as e:
+            logger.error(f"Error getting status: {e}")
+            await update.message.reply_text(f"❌ Ошибка получения статуса: {e}")
     
     async def config_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config command."""
-        if not self._is_admin(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._validate_admin_access(user_id, "/config"):
             await update.message.reply_text("❌ Эта команда доступна только администраторам")
             return
         
@@ -386,6 +364,11 @@ class BotController:
         param = context.args[0]
         value = context.args[1]
         
+        # Validate input
+        if not validate_user_input(param) or not validate_user_input(value):
+            await update.message.reply_text("❌ Недопустимые параметры")
+            return
+        
         # Validate and apply configuration
         try:
             if param == "frequency":
@@ -394,10 +377,20 @@ class BotController:
                     await update.message.reply_text(f"✅ Частота публикаций установлена: {frequency} постов/день")
                 else:
                     await update.message.reply_text("❌ Частота должна быть от 1 до 24")
+            elif param == "timeout":
+                timeout = int(value)
+                if 60 <= timeout <= 3600:
+                    self.state_manager.session_timeout = timeout
+                    await update.message.reply_text(f"✅ Таймаут сессии установлен: {timeout} секунд")
+                else:
+                    await update.message.reply_text("❌ Таймаут должен быть от 60 до 3600 секунд")
             else:
                 await update.message.reply_text(f"❌ Неизвестный параметр: {param}")
         except ValueError:
             await update.message.reply_text("❌ Неверное значение")
+        except Exception as e:
+            logger.error(f"Error configuring parameter {param}: {e}")
+            await update.message.reply_text(f"❌ Ошибка настройки: {e}")
     
     async def theme_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /theme command."""
@@ -406,17 +399,28 @@ class BotController:
             return
         
         theme = " ".join(context.args)
+        
+        # Validate theme input
+        if not validate_user_input(theme) or len(theme) > 100:
+            await update.message.reply_text("❌ Недопустимая тема (максимум 100 символов)")
+            return
+        
         await update.message.reply_text(f"✅ Тема установлена: {theme}")
     
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop command (emergency stop)."""
-        if not self._is_admin(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._validate_admin_access(user_id, "/stop"):
             await update.message.reply_text("❌ Эта команда доступна только администраторам")
             return
         
-        await update.message.reply_text("🛑 Останавливаю все операции...")
-        self.is_running = False
-        await update.message.reply_text("✅ Операции приостановлены")
+        try:
+            await update.message.reply_text("🛑 Останавливаю все операции...")
+            self.is_running = False
+            await update.message.reply_text("✅ Операции приостановлены")
+        except Exception as e:
+            logger.error(f"Error stopping bot: {e}")
+            await update.message.reply_text(f"❌ Ошибка остановки: {e}")
     
     async def register_channel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /register command."""
@@ -433,18 +437,31 @@ class BotController:
         
         try:
             channel_id = int(context.args[0])
-            channel_name = " ".join(context.args[1:])
+            channel_name = ".join(context.args[1:])
+            
+            # Validate input
+            if not validate_user_input(str(channel_id)) or not validate_user_input(channel_name):
+                await update.message.reply_text("❌ Недопустимые параметры")
+                return
+            
+            if len(channel_name) > 100:
+                await update.message.reply_text("❌ Название канала слишком длинное (максимум 100 символов)")
+                return
             
             channel_config = ChannelConfig(name=channel_name)
             channel = await self.channel_manager.register_channel(channel_id, channel_config)
             
             await update.message.reply_text(f"✅ Канал '{channel_name}' зарегистрирован")
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID канала")
         except Exception as e:
+            logger.error(f"Error registering channel: {e}")
             await update.message.reply_text(f"❌ Ошибка регистрации: {e}")
     
     async def generate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /generate command."""
-        if not self._is_admin(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._validate_admin_access(user_id, "/generate"):
             await update.message.reply_text("❌ Эта команда доступна только администраторам")
             return
         
@@ -458,6 +475,15 @@ class BotController:
         try:
             channel_id = int(context.args[0])
             theme = " ".join(context.args[1:])
+            
+            # Validate inputs
+            if not validate_user_input(str(channel_id)) or not validate_user_input(theme):
+                await update.message.reply_text("❌ Недопустимые параметры")
+                return
+            
+            if len(theme) > 200:
+                await update.message.reply_text("❌ Тема слишком длинная (максимум 200 символов)")
+                return
             
             await update.message.reply_text(f"⏳ Генерирую пост на тему '{theme}'...")
             
@@ -475,6 +501,8 @@ class BotController:
             
             await update.message.reply_text(preview)
             
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID канала")
         except Exception as e:
             logger.error(f"Generation failed: {e}")
             await update.message.reply_text(f"❌ Ошибка генерации: {e}")
@@ -482,6 +510,13 @@ class BotController:
     def _is_admin(self, user_id: int) -> bool:
         """Check if user is admin."""
         return user_id in config.bot.admin_ids
+        
+    def _validate_admin_access(self, user_id: int, command_name: str) -> bool:
+        """Validate admin access for sensitive commands."""
+        if not self._is_admin(user_id):
+            logger.warning(f"User {user_id} attempted unauthorized access to {command_name}")
+            return False
+        return True
     
     # Callback handlers
     
@@ -623,6 +658,14 @@ class BotController:
             from src.services.content_generator import ContentStyle
             default_style = ContentStyle(tone="professional", length="medium")
             
+            # Validate theme
+            if not validate_user_input(default_theme):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимая тема для генерации",
+                    parse_mode='HTML'
+                )
+                return
+            
             # Generate post
             post = await self.content_generator.generate_post(
                 default_theme,
@@ -737,6 +780,24 @@ class BotController:
             )
             return
         
+        # Validate channel_id
+        try:
+            channel_id = int(channel_id)
+        except ValueError:
+            await update.callback_query.edit_message_text(
+                "❌ Неверный ID канала",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Validate input
+        if not validate_user_input(str(channel_id)):
+            await update.callback_query.edit_message_text(
+                "❌ Недопустимый ID канала",
+                parse_mode='HTML'
+            )
+            return
+        
         # Route to appropriate handler
         if subaction == 'dashboard':
             await self.channel_interface.show_channel_dashboard(update, context, channel_id)
@@ -801,6 +862,14 @@ class BotController:
             )
             return
         
+        # Validate theme
+        if not validate_user_input(theme) or len(theme) > 10:
+            await update.callback_query.edit_message_text(
+                "❌ Недопустимая тема",
+                parse_mode='HTML'
+            )
+            return
+        
         # Custom theme is handled by ConversationHandler
         if theme == 'custom':
             # This should be handled by ConversationHandler
@@ -830,6 +899,24 @@ class BotController:
         if not post_id:
             await update.callback_query.edit_message_text(
                 "❌ Не указан ID поста",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Validate post_id
+        try:
+            post_id = int(post_id)
+        except ValueError:
+            await update.callback_query.edit_message_text(
+                "❌ Неверный ID поста",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Validate input
+        if not validate_user_input(str(post_id)):
+            await update.callback_query.edit_message_text(
+                "❌ Недопустимый ID поста",
                 parse_mode='HTML'
             )
             return
@@ -882,6 +969,25 @@ class BotController:
                     parse_mode='HTML'
                 )
                 return
+            
+            # Validate channel_id
+            try:
+                channel_id = int(channel_id)
+            except ValueError:
+                await update.callback_query.edit_message_text(
+                    "❌ Неверный ID канала",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate input
+            if not validate_user_input(str(channel_id)):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимый ID канала",
+                    parse_mode='HTML'
+                )
+                return
+            
             await self.content_interface.show_channel_posts(update, context, channel_id, status_filter)
         
         elif subaction == 'view':
@@ -892,10 +998,54 @@ class BotController:
                     parse_mode='HTML'
                 )
                 return
+            
+            # Validate post_id
+            try:
+                post_id = int(post_id)
+            except ValueError:
+                await update.callback_query.edit_message_text(
+                    "❌ Неверный ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate input
+            if not validate_user_input(str(post_id)):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимый ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
             await self.content_interface.show_post_detail(update, context, post_id)
         
         elif subaction == 'publish':
             # Publish post immediately
+            if not post_id:
+                await update.callback_query.edit_message_text(
+                    "❌ Не указан ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate post_id
+            try:
+                post_id = int(post_id)
+            except ValueError:
+                await update.callback_query.edit_message_text(
+                    "❌ Неверный ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate input
+            if not validate_user_input(str(post_id)):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимый ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
             await update.callback_query.edit_message_text(
                 "⏳ Публикую пост...",
                 parse_mode='HTML'
@@ -911,6 +1061,24 @@ class BotController:
             if not post_id:
                 await update.callback_query.edit_message_text(
                     "❌ Не указан ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate post_id
+            try:
+                post_id = int(post_id)
+            except ValueError:
+                await update.callback_query.edit_message_text(
+                    "❌ Неверный ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate input
+            if not validate_user_input(str(post_id)):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимый ID поста",
                     parse_mode='HTML'
                 )
                 return
@@ -967,6 +1135,24 @@ class BotController:
                 )
                 return
             
+            # Validate post_id
+            try:
+                post_id = int(post_id)
+            except ValueError:
+                await update.callback_query.edit_message_text(
+                    "❌ Неверный ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Validate input
+            if not validate_user_input(str(post_id)):
+                await update.callback_query.edit_message_text(
+                    "❌ Недопустимый ID поста",
+                    parse_mode='HTML'
+                )
+                return
+            
             # Show confirmation dialog
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = InlineKeyboardMarkup([
@@ -1015,6 +1201,14 @@ class BotController:
             channel_id = int(parts[1])
             action = parts[2] if len(parts) > 2 else None
             
+            # Validate input
+            if not validate_user_input(str(channel_id)):
+                await query.edit_message_text(
+                    "❌ Недопустимый ID канала",
+                    parse_mode='HTML'
+                )
+                return
+            
             # Route to appropriate handler
             if action == 'detailed':
                 await self.analytics_interface.show_detailed_report(update, context, channel_id)
@@ -1030,7 +1224,7 @@ class BotController:
         except Exception as e:
             logger.error(f"Error handling analytics callback: {e}")
             await query.edit_message_text(
-                f"❌ Ошибка обработки команды\n\n{str(e)}",
+                f"❌ Ошибка обработки команды\n{str(e)}",
                 parse_mode='HTML'
             )
     
@@ -1062,12 +1256,27 @@ class BotController:
             
             category = parts[1]
             
+            # Validate category
+            if not validate_user_input(category):
+                await query.edit_message_text(
+                    "❌ Недопустимая категория настроек",
+                    parse_mode='HTML'
+                )
+                return
+            
             # Route to appropriate handler
             if category == 'frequency':
                 if len(parts) > 2:
                     # Update frequency
                     frequency = int(parts[2])
-                    await self.settings_interface.update_frequency(update, context, frequency)
+                    # Validate frequency
+                    if 1 <= frequency <= 24:
+                        await self.settings_interface.update_frequency(update, context, frequency)
+                    else:
+                        await query.edit_message_text(
+                            "❌ Частота должна быть от 1 до 24",
+                            parse_mode='HTML'
+                        )
                 else:
                     # Show frequency settings
                     await self.settings_interface.show_frequency_settings(update, context)
@@ -1076,7 +1285,14 @@ class BotController:
                 if len(parts) > 2:
                     # Update style
                     style = parts[2]
-                    await self.settings_interface.update_style(update, context, style)
+                    # Validate style
+                    if validate_user_input(style):
+                        await self.settings_interface.update_style(update, context, style)
+                    else:
+                        await query.edit_message_text(
+                            "❌ Недопустимый стиль",
+                            parse_mode='HTML'
+                        )
                 else:
                     # Show style settings
                     await self.settings_interface.show_style_settings(update, context)
@@ -1090,9 +1306,16 @@ class BotController:
                 if len(parts) >= 4:
                     notification_type = parts[2]
                     enabled = parts[3].lower() == 'true'
-                    await self.settings_interface.toggle_notification(
-                        update, context, notification_type, enabled
-                    )
+                    # Validate inputs
+                    if validate_user_input(notification_type):
+                        await self.settings_interface.toggle_notification(
+                            update, context, notification_type, enabled
+                        )
+                    else:
+                        await query.edit_message_text(
+                            "❌ Недопустимый тип уведомления",
+                            parse_mode='HTML'
+                        )
                 else:
                     logger.error(f"Invalid notify callback: {query.data}")
                     
@@ -1112,7 +1335,7 @@ class BotController:
         except Exception as e:
             logger.error(f"Error handling settings callback: {e}")
             await query.edit_message_text(
-                f"❌ Ошибка обработки команды\n\n{str(e)}",
+                f"❌ Ошибка обработки команды\n{str(e)}",
                 parse_mode='HTML'
             )
     
